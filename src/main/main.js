@@ -12,6 +12,7 @@ const { SyncEngine } = require('./sync-engine');
 const rules = require('./rules');
 const { buildMime } = require('./compose');
 const { backupPst } = require('./backup');
+const { RecipientBook, isLikelyAutomated } = require('./recipients');
 
 // Developer/testing aid: run with a separate settings folder (OPENMAIL_PROFILE=C:\path\to\profile).
 if (process.env.OPENMAIL_PROFILE) app.setPath('userData', process.env.OPENMAIL_PROFILE);
@@ -27,6 +28,7 @@ const logBuffer = [];
 // "Back up on exit" is deliberately not saved: it starts off every time OpenMail launches,
 // because copying a large mailbox can take a while.
 let backupOnExit = false;
+let recipients;
 let backupAbort = null;
 
 function send(channel, payload) {
@@ -250,10 +252,17 @@ function registerIpc() {
 
   // ---- Compose
   handle('mail:send', async (draft) => {
+    if (!auth.isSignedIn()) throw new Error('Sign in to Gmail first (Settings → Gmail account).');
     if (!profile) await loadProfile();
+    if (!profile) throw new Error('Could not reach Gmail to send. Check your connection and try again.');
     const raw = await buildMime({ ...draft, from: profile.emailAddress });
     const res = await gmail.send(raw);
     log(`Sent "${draft.subject}" to ${draft.to}`);
+    try {
+      recipients.addFromFields([draft.to, draft.cc, draft.bcc]);
+    } catch (e) {
+      log(`Could not update remembered recipients: ${e.message}`);
+    }
     return res;
   });
   handle('dialog:pickFiles', async () => {
@@ -273,6 +282,13 @@ function registerIpc() {
     return canceled ? null : filePaths[0];
   });
   handle('shell:openPath', async (p) => shell.openPath(p));
+
+  // ---- Remembered recipients (compose autocomplete)
+  handle('recipients:list', async () => recipients.list());
+  handle('recipients:forget', async (address) => {
+    recipients.forget(address);
+    return true;
+  });
 
   // ---- Backup on exit (session-only switch)
   handle('backup:get', async () => ({ enabled: backupOnExit, folder: store.settings.backup?.folder || '' }));
@@ -301,8 +317,11 @@ app.whenReady().then(async () => {
   sync.on('log', log);
   sync.on('status', (s) => send('sync:status', s));
 
+  recipients = new RecipientBook(path.join(store.dir, 'recipients.json'));
+
   registerIpc();
   createWindow();
+  seedRecipients();
 
   if (auth.isSignedIn()) {
     await loadProfile();
@@ -315,6 +334,24 @@ app.whenReady().then(async () => {
     }
   }
 });
+
+/** First run only: learn past recipients from the Sent Items folder so suggestions work right away. */
+async function seedRecipients() {
+  if (recipients.data.seeded) return;
+  try {
+    await openMailbox();
+    const found = await mailbox.call('sentRecipients', { limit: 3000 });
+    for (const r of found) {
+      if (isLikelyAutomated(r.address)) continue; // e.g. unsubscribe requests Gmail sent for you
+      recipients.add([r], r.date ? new Date(r.date) : new Date(), { save: false });
+    }
+    recipients.data.seeded = true;
+    recipients.save();
+    log(`Learned ${recipients.list().length} recipient address(es) from Sent Items for autocomplete`);
+  } catch (e) {
+    log(`Could not read past recipients yet: ${e.message}`);
+  }
+}
 
 let shutdownStarted = false;
 let shutdownDone = false;

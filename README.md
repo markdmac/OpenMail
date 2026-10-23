@@ -57,7 +57,7 @@ OpenMail can copy your mailbox PST to a backup folder each time it closes. Point
 | Mailbox | Three-pane Outlook-style UI, folder tree with unread counts, search, unread filter, drag-and-drop to folders |
 | Reading | HTML mail in a locked-down sandbox; remote images blocked until you allow them; inline images; open or save attachments |
 | Actions | Reply, Reply All, Forward, Delete (to Deleted Items; permanent from there), Move, Mark read/unread, Flag |
-| Compose | Rich-text editor, Cc/Bcc, attachments; sends through Gmail so replies thread correctly |
+| Compose | Rich-text editor, Cc/Bcc, attachments; sends through Gmail so replies thread correctly; **Ctrl+Enter** sends; remembered recipients suggested as you type in To/Cc/Bcc (↑/↓ to choose, Enter or Tab to accept, × to forget an address). The list is learned from every message you send and, once, from your Sent Items folder, and is stored only on your computer |
 | Folders | Create, rename, delete, nest |
 | Rules | Conditions: from, to, cc, subject, body, sender domain, Gmail label, attachment, newsletter, unread, age, size. Actions: move to folder, categorise, mark read, flag, keep in Gmail, trash in Gmail, don't archive, trash without archiving. All/any matching, stop processing, ordering |
 | Clean-up | Preview any rule against mail already in Gmail, then run it ("Run on Gmail now") |

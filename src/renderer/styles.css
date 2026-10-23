@@ -184,3 +184,16 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .multi h2 { font-weight: 600; margin: 0 0 16px; }
 .multi .row { flex-wrap: wrap; margin-bottom: 16px; }
 .hint { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+/* Recipient autocomplete */
+.ac-wrap { position: relative; }
+.ac-wrap > input { width: 100%; }
+.ac-list { position: absolute; left: 0; right: 0; top: calc(100% + 2px); margin: 0; padding: 4px 0; list-style: none; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); z-index: 30; max-height: 280px; overflow: auto; }
+.ac-list[hidden] { display: none; }
+.ac-list li { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; cursor: pointer; }
+.ac-list li.active, .ac-list li:hover { background: var(--accent-soft); }
+.ac-list .ac-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-list .ac-addr { color: var(--muted); font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-list .ac-forget { margin-left: auto; padding: 0 6px; color: var(--muted); font-size: 16px; line-height: 1; visibility: hidden; }
+.ac-list li:hover .ac-forget, .ac-list li.active .ac-forget { visibility: visible; }
+.ac-list .ac-forget:hover { color: var(--danger); background: transparent; }

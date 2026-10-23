@@ -334,6 +334,24 @@ const handlers = {
     scheduleCommit();
     return { id, folderPath };
   },
+  /** Recipients of recent messages in Sent Items, used once to seed compose autocomplete. */
+  sentRecipients({ limit = 3000 } = {}) {
+    const s = requireStore();
+    const sent = s.findFolderByPath('Sent Items', false);
+    if (!sent) return [];
+    const msgs = s.listMessages(sent).sort((a, b) => (b.date ? b.date.getTime() : 0) - (a.date ? a.date.getTime() : 0)).slice(0, limit);
+    const out = [];
+    for (const m of msgs) {
+      try {
+        for (const r of s.getMessage(m.nid).recipients) {
+          if (r.address && r.address.includes('@')) out.push({ name: r.name && r.name !== r.address ? r.name : '', address: r.address.toLowerCase(), date: m.date ? m.date.toISOString() : null });
+        }
+      } catch {
+        /* skip unreadable messages */
+      }
+    }
+    return out;
+  },
   importPst({ path: src, targetPrefix = '', skipDuplicates = true }) {
     const s = requireStore();
     const result = importPst(s, src, {

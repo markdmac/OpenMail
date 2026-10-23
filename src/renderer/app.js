@@ -662,6 +662,107 @@ function sanitizeForQuote(item) {
   return doc.body.innerHTML;
 }
 
+// ---------- recipient autocomplete ----------
+let recipientCache = null;
+async function loadRecipients() {
+  if (!recipientCache) recipientCache = await api('recipients:list').catch(() => []);
+  return recipientCache;
+}
+
+function formatRecipient(r) {
+  if (!r.name) return r.address;
+  const name = /[,;<>"@()]/.test(r.name) ? '"' + r.name.replace(/"/g, '') + '"' : r.name;
+  return name + ' <' + r.address + '>';
+}
+
+/** Wraps an address input with a suggestion list of remembered recipients. Returns the wrapper element. */
+function withAutocomplete(input) {
+  const list = h('ul', { class: 'ac-list', role: 'listbox' });
+  list.hidden = true;
+  const wrap = h('div', { class: 'ac-wrap' }, input, list);
+  let items = [];
+  let active = -1;
+
+  // The address being typed: from the last ";" or "," before the cursor up to the cursor.
+  const currentToken = () => {
+    const v = input.value;
+    const caret = input.selectionStart ?? v.length;
+    const start = Math.max(v.lastIndexOf(';', caret - 1), v.lastIndexOf(',', caret - 1)) + 1;
+    return { start, end: caret, text: v.slice(start, caret).trim() };
+  };
+  const hide = () => {
+    list.hidden = true;
+    items = [];
+    active = -1;
+  };
+  const render = () => {
+    list.replaceChildren(...items.map((r, i) => h('li', {
+      class: i === active ? 'active' : '',
+      role: 'option',
+      onmousedown: (e) => { e.preventDefault(); accept(i); },
+    },
+    h('span', { class: 'ac-name' }, r.name || r.address),
+    r.name ? h('span', { class: 'ac-addr' }, r.address) : null,
+    h('button', { class: 'ac-forget', title: 'Stop suggesting this address', onmousedown: async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await guard(() => api('recipients:forget', r.address));
+      recipientCache = (recipientCache || []).filter((x) => x.address !== r.address);
+      update();
+    } }, '×'))));
+    list.hidden = items.length === 0;
+  };
+  const update = async () => {
+    const tok = currentToken();
+    const q = tok.text.toLowerCase();
+    if (!q) return hide();
+    const already = new Set((input.value.match(/[^\s<>,;"]+@[^\s<>,;"]+/g) || []).map((a) => a.toLowerCase()));
+    const all = await loadRecipients();
+    const starts = [];
+    const contains = [];
+    for (const r of all) {
+      if (already.has(r.address) && r.address !== q) continue;
+      const name = (r.name || '').toLowerCase();
+      if (r.address.startsWith(q) || name.startsWith(q) || name.split(/\s+/).some((w) => w.startsWith(q))) starts.push(r);
+      else if (r.address.includes(q) || name.includes(q)) contains.push(r);
+      if (starts.length >= 8) break;
+    }
+    items = starts.concat(contains).slice(0, 8);
+    active = items.length ? 0 : -1;
+    render();
+  };
+  const accept = (i) => {
+    const r = items[i];
+    if (!r) return;
+    const tok = currentToken();
+    const before = input.value.slice(0, tok.start).replace(/\s*$/, '');
+    const after = input.value.slice(tok.end).replace(/^\s*[;,]?\s*/, '');
+    const insert = (before ? before + ' ' : '') + formatRecipient(r) + '; ';
+    input.value = insert + after;
+    input.setSelectionRange(insert.length, insert.length);
+    hide();
+  };
+
+  input.setAttribute('autocomplete', 'off');
+  input.addEventListener('input', update);
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden || e.ctrlKey || e.metaKey) return; // Ctrl+Enter still sends
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      active = (active + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      render();
+    } else if ((e.key === 'Enter' || e.key === 'Tab') && active >= 0) {
+      e.preventDefault();
+      accept(active);
+    } else if (e.key === 'Escape') {
+      e.stopPropagation(); // close the suggestions, not the message
+      hide();
+    }
+  });
+  return wrap;
+}
+
 function compose(kind) {
   const item = S.current;
   const draft = { to: '', cc: '', bcc: '', subject: '', html: '<p><br></p>', inReplyTo: '', references: '' };
@@ -700,7 +801,8 @@ function compose(kind) {
     h('button', { onclick: async () => { const p = await api('dialog:pickFiles'); files.push(...p); renderChips(); }, title: 'Attach files' }, '📎 Attach'));
 
   let close;
-  const sendBtn = h('button', { class: 'primary', onclick: async () => {
+  const sendBtn = h('button', { class: 'primary', title: 'Send (Ctrl+Enter)', onclick: async () => {
+    if (sendBtn.disabled) return; // already sending
     if (!to.value.trim()) return toast('Add at least one recipient', true);
     sendBtn.disabled = true;
     const ok = await guard(() => api('mail:send', {
@@ -709,16 +811,26 @@ function compose(kind) {
       inReplyTo: draft.inReplyTo, references: draft.references, attachments: files,
     }));
     sendBtn.disabled = false;
-    if (ok) { toast('Message sent'); close(); }
+    if (ok) { recipientCache = null; toast('Message sent'); close(); }
   } }, 'Send');
+  loadRecipients();
 
   close = modal({
     title: kind === 'forward' ? 'Forward' : kind ? 'Reply' : 'New message',
     wide: true,
-    body: h('div', { class: 'compose' },
-      h('div', { class: 'fields' }, h('label', {}, 'To'), to, h('label', {}, 'Cc'), cc, h('label', {}, 'Bcc'), bcc, h('label', {}, 'Subject'), subject),
-      toolbar, editor, chips),
-    footer: [h('span', { class: 'hint', style: 'margin-right:auto' }, `Sends from ${S.info.email || 'your Gmail account'} via Gmail`), h('button', { onclick: () => close() }, 'Discard'), sendBtn],
+    body: h('div', {
+      class: 'compose',
+      // Ctrl+Enter sends from anywhere in the compose window.
+      onkeydown: (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          sendBtn.click();
+        }
+      },
+    },
+    h('div', { class: 'fields' }, h('label', {}, 'To'), withAutocomplete(to), h('label', {}, 'Cc'), withAutocomplete(cc), h('label', {}, 'Bcc'), withAutocomplete(bcc), h('label', {}, 'Subject'), subject),
+    toolbar, editor, chips),
+    footer: [h('span', { class: 'hint', style: 'margin-right:auto' }, `Sends from ${S.info.email || 'your Gmail account'} via Gmail · Ctrl+Enter to send`), h('button', { onclick: () => close() }, 'Discard'), sendBtn],
   });
   setTimeout(() => (kind && kind !== 'forward' ? editor : to).focus(), 0);
 }
