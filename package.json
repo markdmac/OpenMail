@@ -35,6 +35,20 @@
         "portable"
       ],
       "icon": "assets/icon-512.png"
+    },
+    "asarUnpack": [
+      "src/main/store/**",
+      "src/main/pst/**"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OpenMail"
+    },
+    "directories": {
+      "output": "dist"
     }
   }
 }

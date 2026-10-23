@@ -16,7 +16,8 @@ class StoreClient extends EventEmitter {
 
   start() {
     if (this.worker) return;
-    this.worker = new Worker(path.join(__dirname, 'store-worker.js'));
+    // In a packaged build the mailbox engine is unpacked next to app.asar (worker threads can't load from it).
+    this.worker = new Worker(path.join(__dirname, 'store-worker.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`));
     this.worker.on('message', (msg) => {
       if (msg.event) {
         this.emit(msg.event, msg.data);
