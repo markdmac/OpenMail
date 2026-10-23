@@ -6,3 +6,4 @@ out/
 .test-output/
 client_secret*.json
 *.secret.json
+openmail/
