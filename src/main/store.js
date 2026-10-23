@@ -25,6 +25,8 @@ const DEFAULT_SETTINGS = {
     keepEmlBackup: true,
     emlBackupDir: '',
     excludeSpam: true,
+    // Starred messages are copied to the mailbox but never moved to Gmail Trash.
+    keepStarredInGmail: true,
     // How messages with several Gmail labels are filed: 'first' label is the folder, the rest become categories.
     labelMode: 'first',
   },

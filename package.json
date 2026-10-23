@@ -14,11 +14,11 @@
   },
   "dependencies": {
     "mailparser": "^3.7.1",
-    "nodemailer": "^6.9.16"
+    "nodemailer": "^10.2.1"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
     "pst-extractor": "^1.12.0"
   },
   "build": {

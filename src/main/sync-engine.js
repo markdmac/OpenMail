@@ -98,6 +98,11 @@ class SyncEngine extends EventEmitter {
       await this.mailbox.call('commit');
       for (const t of batch) {
         try {
+          // The user may have starred it since it was downloaded: re-check right before trashing.
+          if (await this.isProtectedStarred(t.id)) {
+            this.log(`Kept in Gmail (starred): ${t.id}`);
+            continue;
+          }
           await this.gmail.trash(t.id);
           this.store.record(t.id, 'archived+trashed', t.entryId, t.folder);
           this.bumpTotal('trashed');
@@ -111,6 +116,13 @@ class SyncEngine extends EventEmitter {
     } finally {
       this.flushing = null;
     }
+  }
+
+  /** True if "keep starred in Gmail" is on and the message is currently starred. */
+  async isProtectedStarred(id) {
+    if (this.store.settings.sync.keepStarredInGmail === false) return false;
+    const m = await this.gmail.request('GET', `/messages/${id}`, { query: { format: 'minimal' } });
+    return (m.labelIds || []).includes('STARRED');
   }
 
   async refreshLabels() {
@@ -280,6 +292,15 @@ class SyncEngine extends EventEmitter {
       return { status: 'skipped', plan };
     }
 
+    const starred = msg.labelIds.includes('STARRED');
+    const keepStarred = starred && cfg.keepStarredInGmail !== false;
+    if (plan.deleteOnly && keepStarred) {
+      // Starred mail is never removed from Gmail; archive a copy instead of deleting it.
+      this.log(`Starred, so not trashed (archiving a copy instead): ${parsed.subject}${tag}`);
+      plan.deleteOnly = false;
+      plan.gmail = 'keep';
+    }
+
     if (plan.deleteOnly) {
       if (!cfg.trashingEnabled) {
         this.log(`Would trash (trashing disabled in Settings): ${parsed.subject}${tag}`);
@@ -298,7 +319,7 @@ class SyncEngine extends EventEmitter {
     if (existing && mode === 'rule') {
       // Already in the PST: move it if the rule says so (entries from the old Outlook-based version
       // have no PST id and are left where they are).
-      if (/^d+$/.test(entryId || '') && plan.folder && plan.folder !== existing.folder) {
+      if (/^\d+$/.test(entryId || '') && plan.folder && plan.folder !== existing.folder) {
         await this.mailbox.call('moveItems', { ids: [Number(entryId)], folderPath: folder });
       }
     } else {
@@ -308,7 +329,7 @@ class SyncEngine extends EventEmitter {
         message: {
           ...parsed,
           unread: unread && !plan.markRead,
-          flagged: plan.flag || msg.labelIds.includes('STARRED'),
+          flagged: plan.flag || starred,
           categories,
           rawSize: msg.raw.length,
         },
@@ -325,9 +346,11 @@ class SyncEngine extends EventEmitter {
     else if (mode === 'initial') trash = cfg.trashDuringInitialSync && (!isSent || cfg.trashSent);
     else if (mode === 'new') trash = isSent ? cfg.trashSent : cfg.trashNewMail;
     else trash = false;
+    if (keepStarred) trash = false; // overrides rules and sync settings
 
     if (trash && cfg.trashingEnabled) this.trashQueue.push({ id, entryId, folder });
-    this.log(`${trash && cfg.trashingEnabled ? 'Archived + trashed' : 'Archived'} → ${folder}: ${parsed.subject}${tag}`);
+    const kept = keepStarred ? ' (starred: kept in Gmail)' : '';
+    this.log(`${trash && cfg.trashingEnabled ? 'Archived + trashed' : 'Archived'}${kept} → ${folder}: ${parsed.subject}${tag}`);
     return { status: 'archived', folder, trashed: !!(trash && cfg.trashingEnabled), plan };
   }
 

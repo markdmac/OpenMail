@@ -797,6 +797,7 @@ async function openSettings() {
 
       h('h3', {}, 'Gmail Trash'),
       h('label', {}, h('strong', {}, 'Enable trashing')), check(s.sync, 'trashingEnabled', 'Allow OpenMail to move messages to Gmail Trash. While this is off, OpenMail only copies mail and Gmail is left untouched.'),
+      h('label', {}, 'Starred messages'), check(s.sync, 'keepStarredInGmail', 'Always keep starred messages in Gmail. They are still copied to OpenMail, but never moved to Gmail Trash, even if a rule says so.'),
       trashWarn,
 
       h('h3', {}, 'Maintenance'),

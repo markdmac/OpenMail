@@ -17,6 +17,7 @@ OpenMail is an open-source, Outlook-style desktop mail client for Windows. It do
    - A new message that is **still unread** is downloaded, filed into the PST, then **moved to Gmail Trash**.
    - A new message that was **already read** by the time OpenMail sees it (say you read it on your phone) **stays in Gmail and is ignored**.
    - Sent mail is archived to `Sent Items` and left in Gmail (configurable).
+   - **Starred messages always stay in Gmail** (on by default): they are copied to OpenMail but never trashed, even by a rule. OpenMail re-checks the star right before trashing, so starring a message moments after it arrives still protects it.
 3. **Rescuing mail.** If you want a message back in Gmail, move it out of Gmail Trash. OpenMail records every message ID it has handled, so it never processes that message again.
 
 ### Safety
