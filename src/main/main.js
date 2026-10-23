@@ -55,7 +55,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: 'OpenMail',
-    icon: path.join(__dirname, '..', '..', 'icon.png'),
+    icon: path.join(__dirname, '..', '..', 'assets', 'icon-256.png'),
     backgroundColor: '#f3f2f1',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

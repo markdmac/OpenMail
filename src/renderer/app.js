@@ -800,6 +800,12 @@ async function openSettings() {
       h('label', {}, 'Starred messages'), check(s.sync, 'keepStarredInGmail', 'Always keep starred messages in Gmail. They are still copied to OpenMail, but never moved to Gmail Trash, even if a rule says so.'),
       trashWarn,
 
+      h('h3', {}, 'About'),
+      h('label', {}, 'OpenMail'), h('span', {}, `Version ${S.info.version} · `,
+        h('a', { href: 'https://markdmac.github.io/OpenMail/privacy.html', target: '_blank' }, 'Privacy policy'), ' · ',
+        h('a', { href: 'https://markdmac.github.io/OpenMail/terms.html', target: '_blank' }, 'Terms of service'), ' · ',
+        h('a', { href: 'https://github.com/markdmac/OpenMail', target: '_blank' }, 'GitHub')),
+
       h('h3', {}, 'Maintenance'),
       h('label', {}, 'Initial sync status'), h('span', {}, S.info.state.initialSyncComplete ? `Complete. Last sync ${S.info.state.lastSyncAt ? new Date(S.info.state.lastSyncAt).toLocaleString() : 'never'}` : S.info.state.initialStartedAt ? 'In progress (resumes automatically)' : 'Not started'),
       h('span'), h('div', { class: 'row' },

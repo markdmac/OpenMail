@@ -30,7 +30,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { display: grid; grid-template-rows: 48px auto auto 1fr 28px; background: var(--bg); overflow: hidden; }
+body { display: grid; grid-template-rows: 72px auto auto 1fr 28px; background: var(--bg); overflow: hidden; }
 button { font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
 button:hover:not(:disabled) { background: var(--accent-soft); }
 button:disabled { opacity: .4; cursor: default; }
@@ -43,7 +43,9 @@ input, select, textarea { font: inherit; color: inherit; background: var(--panel
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 .topbar { display: flex; align-items: center; gap: 16px; background: var(--accent); color: #fff; padding: 0 16px; }
-.brand { font-weight: 600; font-size: 16px; width: 220px; }
+.brand { width: 240px; display: flex; align-items: center; }
+.brand img { height: 60px; width: auto; background: #fff; border-radius: 10px; padding: 4px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.setup .setup-logo { height: 110px; width: auto; display: block; margin: 0 0 12px -8px; }
 .search { flex: 0 1 480px; border: none; background: rgba(255,255,255,.92); color: #242424; }
 .account { margin-left: auto; font-size: 13px; }
 

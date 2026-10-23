@@ -26,7 +26,7 @@
     "productName": "OpenMail",
     "files": [
       "src/**/*",
-      "icon.png",
+      "assets/**/*",
       "package.json"
     ],
     "win": {
@@ -34,7 +34,7 @@
         "nsis",
         "portable"
       ],
-      "icon": "icon.png"
+      "icon": "assets/icon-512.png"
     }
   }
 }

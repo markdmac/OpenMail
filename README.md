@@ -154,6 +154,13 @@ src/
 
 PRs are welcome. Please run `npm test` and, if you touch the MSG writer or the Outlook worker, `npm run test:outlook`.
 
+## Privacy and terms
+
+- [Privacy policy](https://markdmac.github.io/OpenMail/privacy.html)
+- [Terms of service](https://markdmac.github.io/OpenMail/terms.html)
+
+OpenMail has no servers and collects no data: your mail goes only between your computer and Google.
+
 ## License
 
 MIT
