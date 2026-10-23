@@ -1,0 +1,32 @@
+{
+  "name": "openmail",
+  "productName": "OpenMail",
+  "version": "0.1.0",
+  "description": "Open-source Outlook-style desktop mail client that archives Gmail into Outlook PST files with rules.",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "author": "OpenMail contributors",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "test:outlook": "node scripts/outlook-smoke.js",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "mailparser": "^3.7.1",
+    "nodemailer": "^6.9.16"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "org.openmail.desktop",
+    "productName": "OpenMail",
+    "files": ["src/**/*", "package.json"],
+    "asarUnpack": ["src/main/outlook/outlook-worker.ps1"],
+    "win": {
+      "target": ["nsis", "portable"]
+    }
+  }
+}
