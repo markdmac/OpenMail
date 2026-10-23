@@ -57,12 +57,12 @@ OpenMail can copy your mailbox PST to a backup folder each time it closes. Point
 | Mailbox | Three-pane Outlook-style UI, folder tree with unread counts, search, unread filter, drag-and-drop to folders |
 | Reading | HTML mail in a locked-down sandbox; remote images blocked until you allow them; inline images; open or save attachments |
 | Actions | Reply, Reply All, Forward, Delete (to Deleted Items; permanent from there), Move, Mark read/unread, Flag |
-| Compose | Rich-text editor, Cc/Bcc, attachments; sends through Gmail so replies thread correctly; **Ctrl+Enter** sends; remembered recipients suggested as you type in To/Cc/Bcc (↑/↓ to choose, Enter or Tab to accept, × to forget an address). The list is learned from every message you send and, once, from your Sent Items folder, and is stored only on your computer |
+| Compose | Rich-text editor, Cc/Bcc, attachments; sends through Gmail so replies thread correctly; **Ctrl+Enter** sends; remembered recipients suggested as you type in To/Cc/Bcc (↑/↓ to choose, Enter or Tab to accept, × to forget an address). The list is learned from every message you send and, once, from your Sent Items folder, and is stored only on your computer. Saved **signature** (Settings → Signature) with formatting and links, added automatically to new messages and/or replies and forwards (above the quoted text), or inserted with the ✍ Signature button |
 | Folders | Create, rename, delete, nest |
 | Rules | Conditions: from, to, cc, subject, body, sender domain, Gmail label, attachment, newsletter, unread, age, size. Actions: move to folder, categorise, mark read, flag, keep in Gmail, trash in Gmail, don't archive, trash without archiving. All/any matching, stop processing, ordering |
 | Clean-up | Preview any rule against mail already in Gmail, then run it ("Run on Gmail now") |
 | PST | Native read/write PST engine (no Outlook needed); Outlook-compatible Unicode files; reads old ANSI PSTs; import any PST with folders, attachments and categories; built-in file integrity check |
-| Bulk clean-up | Sort by sender, subject, date or size; group by sender with "select all / move all / delete all"; Ctrl/Shift multi-select; drag many messages onto a folder |
+| Bulk clean-up | Sort by sender, subject, date or size; group by sender with expandable/collapsible sender groups (or Collapse all / Expand all for a one-line-per-sender overview), a checkbox on each sender to select all their mail, and "move all / delete all" per sender. Tick several senders and press Delete once to clear them all. Ctrl/Shift multi-select; drag many messages onto a folder |
 | Backup | Optional copy of the mailbox to a Google Drive, OneDrive or Dropbox folder when OpenMail closes; on/off switch on the main screen (off at every launch); keeps the last N copies |
 
 ## Requirements

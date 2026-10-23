@@ -16,6 +16,8 @@ let pendingCommit = null;
 let opsSinceCommit = 0;
 
 const emit = (event, data) => parentPort.postMessage({ event, data });
+// Single-line display fields: hide invisible control characters and replacement marks.
+const clean = (s) => String(s || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\ufffd]/g, '').trim();
 
 function friendlyOpenError(e, file) {
   if (e.code === 'EBUSY' || e.code === 'EPERM') {
@@ -112,9 +114,9 @@ function listItems({ folderPath, offset = 0, limit = 200, sort = 'date', dir = '
   const total = items.length;
   const page = items.slice(offset, offset + limit).map((m) => ({
     id: m.nid,
-    subject: m.subject,
-    from: m.from,
-    to: m.to,
+    subject: clean(m.subject),
+    from: clean(m.from),
+    to: clean(m.to),
     date: m.date ? m.date.toISOString() : null,
     unread: m.unread,
     size: m.size,
@@ -128,14 +130,14 @@ function listItems({ folderPath, offset = 0, limit = 200, sort = 'date', dir = '
 
 function countSenders(items) {
   const counts = new Map();
-  for (const m of items) counts.set(m.from || '', (counts.get(m.from || '') || 0) + 1);
+  for (const m of items) counts.set(clean(m.from), (counts.get(clean(m.from)) || 0) + 1);
   return Object.fromEntries(counts);
 }
 
 /** IDs of every message in a folder from a given sender (for bulk actions on a sender group). */
 function idsFromSender({ folderPath, from }) {
   const s = requireStore();
-  return s.listMessages(folderNid(folderPath)).filter((m) => (m.from || '') === (from || '')).map((m) => m.nid);
+  return s.listMessages(folderNid(folderPath)).filter((m) => clean(m.from) === (from || '')).map((m) => m.nid);
 }
 
 // ------------------------------------------------------------------ messages
@@ -157,12 +159,12 @@ function getItem({ id }) {
   const toStr = (type) => m.recipients.filter((r) => r.type === type).map((r) => (r.name && r.address && r.name !== r.address ? `${r.name} <${r.address}>` : r.address || r.name)).join('; ');
   return {
     id,
-    subject: m.subject,
-    from: m.from,
-    fromAddress: m.fromAddress,
-    to: toStr(1) || m.to,
-    cc: toStr(2) || m.cc,
-    bcc: toStr(3) || m.bcc,
+    subject: clean(m.subject),
+    from: clean(m.from),
+    fromAddress: clean(m.fromAddress),
+    to: clean(toStr(1) || m.to),
+    cc: clean(toStr(2) || m.cc),
+    bcc: clean(toStr(3) || m.bcc),
     date: m.date ? m.date.toISOString() : null,
     sent: m.sent ? m.sent.toISOString() : null,
     html: m.html,

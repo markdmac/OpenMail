@@ -209,3 +209,13 @@ test('large folder table (rows in a subnode, multi-page heap) survives rewrites'
   assert.strictEqual(r.getFolder(f).count, 1000);
   r.close();
 });
+
+test('strings are cut at the first NUL and Windows-1252 punctuation is repaired', () => {
+  const { cleanString, decodeValue } = require('../src/main/pst/ltp');
+  const { PT } = require('../src/main/pst/constants');
+  assert.strictEqual(cleanString('A little surprise for you\u0000~\u0005\u0000\u00ff\u00b9t'), 'A little surprise for you');
+  assert.strictEqual(cleanString('\u0093Quoted\u0094 \u0096 costs \u0080 5'), '\u201cQuoted\u201d \u2013 costs \u20ac 5');
+  assert.strictEqual(cleanString('Emoji \u{1F381} and caf\u00e9 stay'), 'Emoji \u{1F381} and caf\u00e9 stay');
+  // ANSI strings are Windows-1252, with junk after the terminator ignored.
+  assert.strictEqual(decodeValue(PT.STRING8, Buffer.from([0x93, 0x48, 0x69, 0x94, 0x00, 0xff, 0xb9])), '\u201cHi\u201d');
+});

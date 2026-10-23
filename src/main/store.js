@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
   pollMinutes: 5,
   // Backup copy of the mailbox, made when OpenMail closes (if switched on for that session).
   backup: { folder: '', keep: 3 },
+  // Email signature (HTML), added automatically to new messages and/or replies and forwards.
+  signature: { html: '', newMessages: true, replies: true },
   sync: {
     // Safety switch: nothing is ever trashed in Gmail until the user turns this on in Settings.
     trashingEnabled: false,

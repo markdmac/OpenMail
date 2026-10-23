@@ -197,3 +197,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .ac-list .ac-forget { margin-left: auto; padding: 0 6px; color: var(--muted); font-size: 16px; line-height: 1; visibility: hidden; }
 .ac-list li:hover .ac-forget, .ac-list li.active .ac-forget { visibility: visible; }
 .ac-list .ac-forget:hover { color: var(--danger); background: transparent; }
+
+/* Collapsible sender groups */
+.messages li.group { gap: 6px; }
+.messages li.group .caret { padding: 0 4px; font-size: 11px; color: var(--muted); }
+.messages li.group .name { cursor: pointer; }
+.messages li.group .group-pick { margin: 0 2px 0 0; }
+.messages li.group.collapsed { border-left-color: var(--border); }
+
+/* Signature */
+.sig-edit .toolbar { display: flex; gap: 2px; border: 1px solid var(--border); border-bottom: none; border-radius: 4px 4px 0 0; padding: 4px; }
+.sig-edit .sig-editor { min-height: 90px; max-height: 220px; border: 1px solid var(--border); border-radius: 0 0 4px 4px; padding: 10px; overflow: auto; background: #fff; color: #242424; outline: none; }
+.compose .editor .om-signature { color: #444; }

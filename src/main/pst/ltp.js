@@ -83,6 +83,30 @@ function stripPrefixMarker(s) {
   return s.charCodeAt(0) === 1 && s.length >= 2 ? s.slice(2) : s;
 }
 
+const CP1252 = new TextDecoder('windows-1252');
+
+/**
+ * Cleans a string read from a PST:
+ * - Text ends at the first NUL. Outlook (especially in ANSI files) can leave stale bytes after it.
+ * - C1 control characters (U+0080–U+009F) never occur in real text; they are Windows-1252 punctuation
+ *   (curly quotes, dashes, €) that was decoded as Latin-1, so map them back.
+ */
+function cleanString(s) {
+  const nul = s.indexOf('\u0000');
+  if (nul >= 0) s = s.slice(0, nul);
+  if (/[\u0080-\u009f]/.test(s)) {
+    s = s.replace(/[\u0080-\u009f]/g, (c) => {
+      const mapped = CP1252.decode(Buffer.from([c.charCodeAt(0)]));
+      return mapped === c ? '' : mapped; // unmapped bytes (0x81, 0x8d, …) are dropped
+    });
+  }
+  return s;
+}
+
+function decodeString8(b) {
+  return cleanString(CP1252.decode(b));
+}
+
 function decodeValue(type, buf, unicode = true) {
   switch (type) {
     case PT.SHORT:
@@ -106,9 +130,9 @@ function decodeValue(type, buf, unicode = true) {
       return new Date(Number(ft / 10000n - 11644473600000n));
     }
     case PT.UNICODE:
-      return stripPrefixMarker(buf.toString('utf16le'));
+      return stripPrefixMarker(cleanString(buf.toString('utf16le')));
     case PT.STRING8:
-      return stripPrefixMarker(buf.toString('latin1').replace(/\0+$/, ''));
+      return stripPrefixMarker(decodeString8(buf));
     case PT.CLSID:
       return Buffer.from(buf);
     case PT.MV_UNICODE:
@@ -121,7 +145,7 @@ function decodeValue(type, buf, unicode = true) {
       offs.push(buf.length);
       const items = offs.slice(0, -1).map((o, i) => buf.subarray(o, offs[i + 1]));
       if (type === PT.MV_BINARY) return items.map((b) => Buffer.from(b));
-      return items.map((b) => (type === PT.MV_UNICODE ? b.toString('utf16le') : b.toString('latin1').replace(/\0+$/, '')));
+      return items.map((b) => (type === PT.MV_UNICODE ? cleanString(b.toString('utf16le')) : decodeString8(b)));
     }
     case PT.MV_LONG: {
       const out = [];
@@ -650,4 +674,4 @@ function buildTC(columnDefs, rows, io, existingLayout) {
   return heap.serialize();
 }
 
-module.exports = { HeapReader, HeapBuilder, readPC, readTC, buildPC, buildTC, buildBth, encodeValue, decodeValue, layoutColumns, MAX_ALLOC, HN_PAGE_MAX, isHid };
+module.exports = { HeapReader, HeapBuilder, readPC, readTC, buildPC, buildTC, buildBth, encodeValue, decodeValue, cleanString, layoutColumns, MAX_ALLOC, HN_PAGE_MAX, isHid };

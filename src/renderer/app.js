@@ -28,13 +28,15 @@ const S = {
   sort: prefs.sort || 'date',
   dir: prefs.dir || 'desc',
   groupBySender: !!prefs.groupBySender,
+  collapseAll: !!prefs.collapseAll, // sender groups start collapsed when true
+  toggledSenders: new Set(), // senders flipped from the collapseAll default
   allowRemote: new Set(),
   log: [],
 };
 
 function savePrefs() {
   try {
-    localStorage.setItem('listPrefs', JSON.stringify({ sort: S.sort, dir: S.dir, groupBySender: S.groupBySender }));
+    localStorage.setItem('listPrefs', JSON.stringify({ sort: S.sort, dir: S.dir, groupBySender: S.groupBySender, collapseAll: S.collapseAll }));
   } catch {
     /* ignore */
   }
@@ -298,6 +300,7 @@ async function loadItems(reset) {
     S.items = [];
     S.selection.clear();
     S.anchor = null;
+    S.toggledSenders.clear();
     $('#message-list').replaceChildren(h('li', { class: 'empty' }, 'Loading…'));
   }
   $('#folder-title').textContent = S.folder ? S.folder.split('/').pop() : 'Folders';
@@ -306,12 +309,21 @@ async function loadItems(reset) {
     $('#message-list').replaceChildren(h('li', { class: 'empty' }, 'No folders yet. Run a sync to download your mail.'));
     return;
   }
-  const res = await guard(() => api('items:list', { folderPath: S.folder, offset: S.items.length, limit: PAGE_SIZE, sort: S.sort, dir: S.dir, search: S.search, unreadOnly: S.unreadOnly }));
+  const limit = grouped() ? 50000 : PAGE_SIZE;
+  const res = await guard(() => api('items:list', { folderPath: S.folder, offset: S.items.length, limit, sort: S.sort, dir: S.dir, search: S.search, unreadOnly: S.unreadOnly }));
   if (!res || token !== listToken) return;
   S.items = S.items.concat(res.items || []);
   S.total = res.total;
   S.senders = res.senders;
   renderList();
+}
+
+function grouped() {
+  return S.groupBySender && S.sort === 'from';
+}
+
+function isCollapsed(sender) {
+  return S.collapseAll !== S.toggledSenders.has(sender);
 }
 
 function renderListHeader() {
@@ -340,7 +352,9 @@ function renderListHeader() {
       if (S.groupBySender && S.sort !== 'from') { S.sort = 'from'; S.dir = 'asc'; }
       savePrefs();
       loadItems(true);
-    } }), ' Group by sender'));
+    } }), ' Group by sender'),
+    grouped() ? h('button', { class: 'col', title: 'Collapse every sender group', onclick: () => { S.collapseAll = true; S.toggledSenders.clear(); savePrefs(); renderList(); } }, '⊟ Collapse all') : null,
+    grouped() ? h('button', { class: 'col', title: 'Expand every sender group', onclick: () => { S.collapseAll = false; S.toggledSenders.clear(); savePrefs(); renderList(); } }, '⊞ Expand all') : null);
 }
 
 function rowFor(it) {
@@ -371,20 +385,16 @@ function renderList() {
   const ul = $('#message-list');
   ul.replaceChildren();
   if (!S.items.length) ul.append(h('li', { class: 'empty' }, S.search ? 'No matches.' : 'This folder is empty.'));
+  const groups = new Map(); // sender → loaded message ids
+  if (grouped()) for (const it of S.items) (groups.get(it.from || '') || groups.set(it.from || '', []).get(it.from || '')).push(it.id);
   let lastSender = null;
   for (const it of S.items) {
-    if (S.groupBySender && S.sort === 'from' && it.from !== lastSender) {
-      lastSender = it.from;
-      const count = S.senders ? S.senders[it.from || ''] : null;
-      const sender = it.from || '';
-      ul.append(h('li', { class: 'group' },
-        h('span', { class: 'name' }, sender || '(no sender)'),
-        count ? h('span', { class: 'count' }, `${count}`) : null,
-        h('span', { class: 'spacer' }),
-        h('button', { class: 'link', title: 'Select every message from this sender in this folder', onclick: () => selectSender(sender) }, 'Select all'),
-        h('button', { class: 'link', title: 'Move every message from this sender', onclick: async () => { const ids = await senderIds(sender); const p = await pickFolder(`Move ${ids.length} message(s) from ${sender || '(no sender)'}`); if (p) moveIds(ids, p); } }, 'Move all…'),
-        h('button', { class: 'link danger-link', title: 'Delete every message from this sender', onclick: async () => deleteIds(await senderIds(sender), `all ${count || ''} message(s) from ${sender || '(no sender)'}`) }, 'Delete all')));
+    const sender = it.from || '';
+    if (grouped() && sender !== lastSender) {
+      lastSender = sender;
+      ul.append(groupHeader(sender, groups.get(sender)));
     }
+    if (grouped() && isCollapsed(sender)) continue;
     ul.append(rowFor(it));
   }
   $('#load-more').hidden = S.items.length >= S.total;
@@ -393,6 +403,43 @@ function renderList() {
   const all = document.querySelector('.select-all');
   if (all) all.checked = S.items.length > 0 && S.items.every((m) => S.selection.has(m.id));
   updateRibbon();
+}
+
+function groupHeader(sender, ids) {
+  const count = (S.senders && S.senders[sender]) || ids.length;
+  const picked = ids.filter((id) => S.selection.has(id)).length;
+  const collapsed = isCollapsed(sender);
+  const label = sender || '(no sender)';
+  const toggle = () => {
+    if (S.toggledSenders.has(sender)) S.toggledSenders.delete(sender);
+    else S.toggledSenders.add(sender);
+    renderList();
+  };
+  const box = h('input', {
+    type: 'checkbox',
+    class: 'group-pick',
+    title: `Select all ${count} message(s) from ${label}`,
+    checked: ids.length > 0 && picked === ids.length,
+    onclick: async (e) => {
+      e.stopPropagation();
+      const on = e.target.checked;
+      // Every message from the sender, including any not loaded in the list.
+      const all = ids.length >= count ? ids : await guard(() => senderIds(sender));
+      if (!all) return;
+      for (const id of all) on ? S.selection.add(id) : S.selection.delete(id);
+      renderList();
+      if (S.selection.size > 1) renderSelectionPane();
+    },
+  });
+  box.indeterminate = picked > 0 && picked < ids.length;
+  return h('li', { class: `group ${collapsed ? 'collapsed' : ''}`, 'data-sender': sender },
+    box,
+    h('button', { class: 'caret', title: collapsed ? 'Expand' : 'Collapse', 'aria-expanded': String(!collapsed), onclick: toggle }, collapsed ? '▶' : '▼'),
+    h('span', { class: 'name', title: label, onclick: toggle }, label),
+    h('span', { class: 'count' }, `${count}`),
+    h('span', { class: 'spacer' }),
+    h('button', { class: 'link', title: 'Move every message from this sender', onclick: async () => { const all = await senderIds(sender); const p = await pickFolder(`Move ${all.length} message(s) from ${label}`); if (p) moveIds(all, p); } }, 'Move all…'),
+    h('button', { class: 'link danger-link', title: 'Delete every message from this sender', onclick: async () => deleteIds(await senderIds(sender), `all ${count} message(s) from ${label}`) }, 'Delete all'));
 }
 
 async function senderIds(sender) {
@@ -573,7 +620,12 @@ function removeFromList(ids) {
 async function deleteIds(ids, what) {
   if (!ids.length) return;
   const inDeleted = flattenFolders(S.tree?.children).find((f) => f.path === S.folder)?.isDeletedItems || false;
-  const label = what || (ids.length === 1 ? 'this message' : `${ids.length.toLocaleString()} messages`);
+  let label = what || (ids.length === 1 ? 'this message' : `${ids.length.toLocaleString()} messages`);
+  if (!what && ids.length > 1 && grouped()) {
+    const set = new Set(ids);
+    const senders = new Set(S.items.filter((m) => set.has(m.id)).map((m) => m.from || ''));
+    if (senders.size > 1) label += ` from ${senders.size.toLocaleString()} senders`;
+  }
   if (inDeleted && !(await confirmModal('Delete permanently', `Permanently delete ${label}? They are already in Deleted Items.`, 'Delete', true))) return;
   if (!inDeleted && ids.length > 1 && !(await confirmModal('Delete messages', `Move ${label} to Deleted Items?`, 'Delete', true))) return;
   await guard(async () => {
@@ -649,6 +701,27 @@ function quoteBlock(item) {
     `<b>Sent:</b> ${escapeHtml(fmtDate(item.date, true))}<br><b>To:</b> ${escapeHtml(item.to)}<br>` +
     (item.cc ? `<b>Cc:</b> ${escapeHtml(item.cc)}<br>` : '') +
     `<b>Subject:</b> ${escapeHtml(item.subject)}</p><blockquote>${sanitizeForQuote(item)}</blockquote>`;
+}
+
+/** Strips scripts, event handlers and javascript: links from user or email HTML. */
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(html || '', 'text/html');
+  doc.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base').forEach((n) => n.remove());
+  doc.querySelectorAll('*').forEach((n) => [...n.attributes].forEach((a) => {
+    if (/^on/i.test(a.name) || (/^(href|src)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name);
+  }));
+  return doc.body.innerHTML;
+}
+
+function signatureHtml() {
+  const sig = S.info.settings.signature || {};
+  const html = sanitizeHtml(sig.html || '');
+  return html.replace(/<br\s*\/?>|&nbsp;|\s/gi, '') ? html : '';
+}
+
+function signatureBlock() {
+  const html = signatureHtml();
+  return html ? '<div class="om-signature" data-om-signature="1">' + html + '</div>' : '';
 }
 
 function sanitizeForQuote(item) {
@@ -765,12 +838,14 @@ function withAutocomplete(input) {
 
 function compose(kind) {
   const item = S.current;
-  const draft = { to: '', cc: '', bcc: '', subject: '', html: '<p><br></p>', inReplyTo: '', references: '' };
+  const sig = S.info.settings.signature || {};
+  const draft = { to: '', cc: '', bcc: '', subject: '', html: '<p><br></p>' + (sig.newMessages !== false ? signatureBlock() : ''), inReplyTo: '', references: '' };
   const me = (S.info.email || '').toLowerCase();
   if (item && kind) {
     const prefix = kind === 'forward' ? 'FW: ' : 'RE: ';
     draft.subject = /^(re|fw|fwd):/i.test(item.subject || '') && kind !== 'forward' ? item.subject : prefix + (item.subject || '');
-    draft.html = quoteBlock(item);
+    // Typing space, then the signature, then the quoted message.
+    draft.html = '<p><br></p>' + (sig.replies !== false ? signatureBlock() : '') + quoteBlock(item).replace(/^<p><br><\/p>/, '');
     if (kind !== 'forward') {
       draft.to = item.fromAddress || item.from;
       draft.inReplyTo = item.messageId || '';
@@ -798,7 +873,14 @@ function compose(kind) {
     h('button', { onclick: cmd('insertOrderedList'), title: 'Numbering' }, '1. List'),
     h('button', { onclick: async () => { const url = await promptModal('Insert link', 'URL:', 'https://'); if (url) cmd('createLink', url)(); }, title: 'Link' }, '🔗'),
     h('button', { onclick: cmd('removeFormat'), title: 'Clear formatting' }, 'Tx'),
-    h('button', { onclick: async () => { const p = await api('dialog:pickFiles'); files.push(...p); renderChips(); }, title: 'Attach files' }, '📎 Attach'));
+    h('button', { onclick: async () => { const p = await api('dialog:pickFiles'); files.push(...p); renderChips(); }, title: 'Attach files' }, '📎 Attach'),
+    h('button', { title: 'Insert your signature (set it up in Settings → Signature)', onclick: () => {
+      const block = signatureBlock();
+      if (!block) { toast('No signature yet: add one in Settings → Signature'); return; }
+      if (editor.querySelector('[data-om-signature]')) { toast('This message already has your signature'); return; }
+      editor.focus();
+      document.execCommand('insertHTML', false, block);
+    } }, '✍ Signature'));
 
   let close;
   const sendBtn = h('button', { class: 'primary', title: 'Send (Ctrl+Enter)', onclick: async () => {
@@ -847,6 +929,16 @@ async function openSettings() {
 
   const pstInput = field(s, 'pstPath');
   const emlInput = field(s.sync, 'emlBackupDir');
+  s.signature = { html: '', newMessages: true, replies: true, ...(s.signature || {}) };
+  const sigEditor = h('div', { class: 'editor sig-editor', contenteditable: 'true', html: sanitizeHtml(s.signature.html), 'aria-label': 'Signature' });
+  sigEditor.addEventListener('input', () => (s.signature.html = sanitizeHtml(sigEditor.innerHTML)));
+  const sigCmd = (c, v) => () => { sigEditor.focus(); document.execCommand(c, false, v); s.signature.html = sanitizeHtml(sigEditor.innerHTML); };
+  const sigToolbar = h('div', { class: 'toolbar' },
+    h('button', { onclick: sigCmd('bold'), title: 'Bold' }, h('b', {}, 'B')),
+    h('button', { onclick: sigCmd('italic'), title: 'Italic' }, h('i', {}, 'I')),
+    h('button', { onclick: sigCmd('underline'), title: 'Underline' }, h('u', {}, 'U')),
+    h('button', { onclick: async () => { const url = await promptModal('Insert link', 'URL:', 'https://'); if (url) sigCmd('createLink', url)(); }, title: 'Link' }, '🔗'),
+    h('button', { onclick: sigCmd('removeFormat'), title: 'Clear formatting' }, 'Tx'));
   s.backup = { folder: '', keep: 3, ...(s.backup || {}) };
   const backupInput = field(s.backup, 'folder', { placeholder: 'e.g. G:\\My Drive\\OpenMail Backups' });
   const account = h('div', { class: 'row' });
@@ -897,6 +989,13 @@ async function openSettings() {
           checkResult.textContent = r.problems.length ? `Found ${r.problems.length} problem(s): ${r.problems.slice(0, 5).join('; ')}` : 'No problems found.';
         } }, 'Check file')),
       checkResult,
+
+      h('h3', {}, 'Signature'),
+      h('label', {}, 'Your signature'), h('div', { class: 'sig-edit' }, sigToolbar, sigEditor),
+      h('label', {}, 'Add it to'), h('div', { class: 'row' },
+        check(s.signature, 'newMessages', 'New messages'),
+        check(s.signature, 'replies', 'Replies and forwards')),
+      h('span'), h('span', { class: 'hint' }, 'Formatting, links and pasted images are kept. You can also insert the signature with the ✍ Signature button while writing.'),
 
       h('h3', {}, 'Backup'),
       h('label', {}, 'Backup folder'), h('div', { class: 'row' }, backupInput, h('button', { onclick: async () => { const p = await api('dialog:pickFolder'); if (p) { s.backup.folder = p; backupInput.value = p; } } }, 'Browse…')),
