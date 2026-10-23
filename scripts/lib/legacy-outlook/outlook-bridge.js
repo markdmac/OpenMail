@@ -6,7 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { EventEmitter } = require('events');
 
-const WORKER = path.join(__dirname, 'outlook-worker.ps1').replace('app.asar', 'app.asar.unpacked');
+const WORKER = path.join(__dirname, 'outlook-worker.ps1');
 
 class OutlookBridge extends EventEmitter {
   constructor() {

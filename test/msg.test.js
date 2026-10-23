@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('crypto');
-const { CompoundFile } = require('../src/main/msg/cfb-writer');
-const { buildMsg } = require('../src/main/msg/msg-writer');
+const { CompoundFile } = require('../scripts/lib/legacy-msg/cfb-writer');
+const { buildMsg } = require('../scripts/lib/legacy-msg/msg-writer');
 const { readCfb } = require('./cfb-reader');
 
 function readProps(stream, headerSize) {

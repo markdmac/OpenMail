@@ -18,15 +18,24 @@
   },
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "pst-extractor": "^1.12.0"
   },
   "build": {
     "appId": "org.openmail.desktop",
     "productName": "OpenMail",
-    "files": ["src/**/*", "package.json"],
-    "asarUnpack": ["src/main/outlook/outlook-worker.ps1"],
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "src/main/outlook/outlook-worker.ps1"
+    ],
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     }
   }
 }

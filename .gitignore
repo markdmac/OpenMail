@@ -4,3 +4,5 @@ out/
 *.pst
 *.msg
 .test-output/
+client_secret*.json
+*.secret.json

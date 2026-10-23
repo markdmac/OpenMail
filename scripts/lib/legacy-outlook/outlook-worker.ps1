@@ -62,7 +62,7 @@ function Cmd-Init($a) {
         try { if ($s.FilePath -and ([IO.Path]::GetFullPath($s.FilePath) -ieq $pst)) { $found = $s; break } } catch {}
     }
     if ($found -eq $null) {
-        $script:ns.AddStoreEx($pst, 3) # olStoreUnicode
+        $script:ns.AddStoreEx($pst, 2) # olStoreUnicode (1=default, 2=Unicode, 3=ANSI)
         foreach ($s in $script:ns.Stores) {
             try { if ($s.FilePath -and ([IO.Path]::GetFullPath($s.FilePath) -ieq $pst)) { $found = $s; break } } catch {}
         }

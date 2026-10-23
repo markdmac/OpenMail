@@ -8,9 +8,9 @@
 const fs = require('fs');
 const path = require('path');
 const MailComposer = require('nodemailer/lib/mail-composer');
-const { parseRaw } = require('../src/main/msg/from-mime');
-const { buildMsg } = require('../src/main/msg/msg-writer');
-const { OutlookBridge } = require('../src/main/outlook/outlook-bridge');
+const { parseRaw } = require('../src/main/from-mime');
+const { buildMsg } = require('./lib/legacy-msg/msg-writer');
+const { OutlookBridge } = require('./lib/legacy-outlook/outlook-bridge');
 
 const OUT = path.join(__dirname, '..', '.test-output');
 
