@@ -735,6 +735,8 @@ async function openSettings() {
 
   const pstInput = field(s, 'pstPath');
   const emlInput = field(s.sync, 'emlBackupDir');
+  s.backup = { folder: '', keep: 3, ...(s.backup || {}) };
+  const backupInput = field(s.backup, 'folder', { placeholder: 'e.g. G:\\My Drive\\OpenMail Backups' });
   const account = h('div', { class: 'row' });
   const renderAccount = () => {
     account.replaceChildren(
@@ -783,6 +785,12 @@ async function openSettings() {
           checkResult.textContent = r.problems.length ? `Found ${r.problems.length} problem(s): ${r.problems.slice(0, 5).join('; ')}` : 'No problems found.';
         } }, 'Check file')),
       checkResult,
+
+      h('h3', {}, 'Backup'),
+      h('label', {}, 'Backup folder'), h('div', { class: 'row' }, backupInput, h('button', { onclick: async () => { const p = await api('dialog:pickFolder'); if (p) { s.backup.folder = p; backupInput.value = p; } } }, 'Browse…')),
+      h('label', {}, 'Copies to keep'), h('div', { class: 'row' }, field(s.backup, 'keep', { type: 'number', min: 1, max: 50, style: 'width:80px' }), 'most recent backups (older ones are removed)'),
+      h('span'), h('span', { class: 'hint' }, 'Pick a folder that your cloud app syncs, such as "G:\\My Drive\\OpenMail Backups" (Google Drive for desktop), a OneDrive folder or a Dropbox folder. When the "Back up on exit" switch at the top of the main window is on, OpenMail copies the mailbox here as it closes, once the file is no longer in use. The switch is always off when OpenMail starts.'),
+      h('label', {}, 'Last backup'), h('span', {}, S.info.state.lastBackup ? `${new Date(S.info.state.lastBackup.at).toLocaleString()} · ${fmtSize(S.info.state.lastBackup.bytes)} · ${S.info.state.lastBackup.path}` : 'Never'),
 
       h('h3', {}, 'Sync behaviour'),
       h('label', {}, 'Check for new mail every'), h('div', { class: 'row' }, field(s, 'pollMinutes', { type: 'number', min: 1, style: 'width:80px' }), 'minutes'),
@@ -1049,6 +1057,43 @@ function bindUi() {
   $('#btn-settings').onclick = () => openSettings();
   $('#btn-log').onclick = openLog;
   $('#btn-newfolder').onclick = () => newFolder('');
+  $('#backup-toggle').onchange = async (e) => {
+    const want = e.target.checked;
+    try {
+      const r = await api('backup:set', want);
+      e.target.checked = r.enabled;
+      toast(r.enabled ? 'Your mailbox will be backed up when you close OpenMail' : 'Back up on exit is off');
+    } catch (err) {
+      e.target.checked = false;
+      toast(err.message, true);
+      openSettings();
+    }
+  };
+  $('#backup-skip').onclick = () => { $('#backup-skip').disabled = true; $('#backup-text').textContent = 'Cancelling…'; api('backup:cancel'); };
+  openmail.on('backup:progress', (p) => {
+    $('#modal-root').replaceChildren();
+    $('#backup-overlay').hidden = false;
+    const bar = $('#backup-progress');
+    if (p.phase === 'stopping') {
+      $('#backup-text').textContent = 'Finishing the current sync and closing the mailbox…';
+      bar.removeAttribute('value');
+    } else if (p.phase === 'copying') {
+      $('#backup-dest').textContent = `To: ${p.folder}`;
+      if (p.total) {
+        bar.max = p.total;
+        bar.value = p.copied;
+        $('#backup-text').textContent = `Copied ${fmtSize(p.copied)} of ${fmtSize(p.total)} (${Math.floor((100 * p.copied) / p.total)}%)`;
+      } else {
+        $('#backup-text').textContent = 'Starting the copy…';
+        bar.removeAttribute('value');
+      }
+    } else if (p.phase === 'done') {
+      bar.max = 1;
+      bar.value = 1;
+      $('#backup-text').textContent = 'Backup complete. Closing…';
+      $('#backup-skip').hidden = true;
+    }
+  });
   $('#load-more').onclick = () => loadItems(false);
   $('#unread-only').onchange = (e) => { S.unreadOnly = e.target.checked; loadItems(true); };
   let searchTimer;
@@ -1101,6 +1146,9 @@ function bindUi() {
   S.info = await api('app:info');
   S.log = S.info.log || [];
   renderStatus(S.info.status);
+  const b = await api('backup:get');
+  $('#backup-toggle').checked = b.enabled;
+  $('#backup-switch').title = b.folder ? `When on, OpenMail copies the mailbox to "${b.folder}" as it closes. Always starts off.` : 'Set a backup folder in Settings → Backup to use this. Always starts off.';
   if (!S.info.settings.google.clientId || !S.info.signedIn) openSettings();
   await initMailbox();
 })();

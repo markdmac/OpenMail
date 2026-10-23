@@ -23,10 +23,32 @@ OpenMail is an open-source, Outlook-style desktop mail client for Windows. It do
 ### Safety
 
 - **Nothing is ever trashed in Gmail until you turn on "Enable trashing" in Settings.** Until then OpenMail only copies.
-- A message is moved to Gmail Trash only after Outlook has confirmed it is saved in the PST.
+- A message is moved to Gmail Trash only after the PST holding it has been saved to disk.
 - An optional raw `.eml` backup of every downloaded message is kept (on by default).
 - ⚠️ **Gmail permanently deletes anything that has been in Trash for 30 days.** Rescue messages within that window.
 - OpenMail uses the `gmail.modify` scope, which cannot permanently delete mail.
+
+## Backing up your mailbox to Google Drive or other cloud storage
+
+OpenMail can copy your mailbox PST to a backup folder each time it closes. Point it at a folder that your cloud storage app keeps in sync, and the cloud app uploads the copy for you. This works with any provider:
+
+| Provider | Typical backup folder |
+|---|---|
+| Google Drive for desktop | `G:\My Drive\OpenMail Backups` |
+| OneDrive | `C:\Users\<you>\OneDrive\OpenMail Backups` |
+| Dropbox | `C:\Users\<you>\Dropbox\OpenMail Backups` |
+
+**Set it up once:** Settings → Backup → choose the **Backup folder** and how many **Copies to keep** (default 3; older backups are removed automatically).
+
+**How it behaves:**
+
+- **The switch:** the **☁ Back up on exit** switch sits in the top bar of the main window.
+- **When the copy runs:** only while OpenMail is closing. Syncing stops first and the mailbox file is saved and closed, so the copy is never taken while the file is in use.
+- **The switch is always off when OpenMail starts.** A large mailbox can take a while to copy, so you decide each session whether this close should make a backup. Turn it on whenever you want the next close to back up.
+- **While copying:** a progress window shows how much has been copied. **Skip backup and close** cancels the copy and exits; your mailbox itself is never affected.
+- **Copy names and safety:** each backup is named `<mailbox name> backup YYYY-MM-DD HHMMSS.pst`. It's written under a temporary `.partial` name and only renamed once it's complete and the size has been verified, so an interrupted copy never looks like a finished backup.
+- **If the folder is missing:** if the backup folder isn't available (for example, your cloud drive isn't connected), OpenMail tells you and closes normally.
+- **Uploading takes longer:** your cloud app uploads the file after OpenMail has finished copying it, which can take a while for a large mailbox. Check the cloud app if you need to know when the upload is done.
 
 ## Features
 
@@ -41,6 +63,7 @@ OpenMail is an open-source, Outlook-style desktop mail client for Windows. It do
 | Clean-up | Preview any rule against mail already in Gmail, then run it ("Run on Gmail now") |
 | PST | Native read/write PST engine (no Outlook needed); Outlook-compatible Unicode files; reads old ANSI PSTs; import any PST with folders, attachments and categories; built-in file integrity check |
 | Bulk clean-up | Sort by sender, subject, date or size; group by sender with "select all / move all / delete all"; Ctrl/Shift multi-select; drag many messages onto a folder |
+| Backup | Optional copy of the mailbox to a Google Drive, OneDrive or Dropbox folder when OpenMail closes; on/off switch on the main screen (off at every launch); keeps the last N copies |
 
 ## Requirements
 

@@ -11,6 +11,11 @@
   <header class="topbar">
     <div class="brand"><img src="../../assets/logo-full.png" alt="OpenMail"></div>
     <input id="search" class="search" type="search" placeholder="Search current folder">
+    <label class="switch" id="backup-switch" title="Copy the mailbox to your backup folder when OpenMail closes. Always starts off.">
+      <input type="checkbox" id="backup-toggle">
+      <span class="slider" aria-hidden="true"></span>
+      <span class="switch-label">☁ Back up on exit</span>
+    </label>
     <div class="account" id="account"></div>
   </header>
 
@@ -68,6 +73,15 @@
   </footer>
 
   <div id="modal-root"></div>
+  <div id="backup-overlay" class="overlay" hidden>
+    <div class="overlay-card">
+      <h2>Backing up your mailbox</h2>
+      <p id="backup-text">Finishing up…</p>
+      <progress id="backup-progress"></progress>
+      <p class="hint" id="backup-dest"></p>
+      <button id="backup-skip">Skip backup and close</button>
+    </div>
+  </div>
   <template id="tpl-setup">
     <div class="setup">
       <img class="setup-logo" src="../../assets/logo-full.png" alt="OpenMail">

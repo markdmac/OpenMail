@@ -11,6 +11,7 @@ const { StoreClient } = require('./store/store-client');
 const { SyncEngine } = require('./sync-engine');
 const rules = require('./rules');
 const { buildMime } = require('./compose');
+const { backupPst } = require('./backup');
 
 // Developer/testing aid: run with a separate settings folder (OPENMAIL_PROFILE=C:\path\to\profile).
 if (process.env.OPENMAIL_PROFILE) app.setPath('userData', process.env.OPENMAIL_PROFILE);
@@ -23,6 +24,10 @@ let mailbox;
 let sync;
 let profile = null;
 const logBuffer = [];
+// "Back up on exit" is deliberately not saved: it starts off every time OpenMail launches,
+// because copying a large mailbox can take a while.
+let backupOnExit = false;
+let backupAbort = null;
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -65,6 +70,12 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // Closing the window runs the shutdown sequence (and the optional backup) before the app exits.
+  win.on('close', (e) => {
+    if (shutdownDone) return;
+    e.preventDefault();
+    shutdown();
+  });
   // Links clicked inside messages open in the system browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:|^mailto:/i.test(url)) shell.openExternal(url);
@@ -262,6 +273,19 @@ function registerIpc() {
     return canceled ? null : filePaths[0];
   });
   handle('shell:openPath', async (p) => shell.openPath(p));
+
+  // ---- Backup on exit (session-only switch)
+  handle('backup:get', async () => ({ enabled: backupOnExit, folder: store.settings.backup?.folder || '' }));
+  handle('backup:set', async (enabled) => {
+    if (enabled && !store.settings.backup?.folder) throw new Error('Choose a backup folder first (Settings → Backup).');
+    backupOnExit = !!enabled;
+    log(`Back up on exit turned ${backupOnExit ? 'on' : 'off'}`);
+    return { enabled: backupOnExit };
+  });
+  handle('backup:cancel', async () => {
+    if (backupAbort) backupAbort.abort();
+    return true;
+  });
 }
 
 app.whenReady().then(async () => {
@@ -292,19 +316,62 @@ app.whenReady().then(async () => {
   }
 });
 
-let quitting = false;
-app.on('before-quit', async (e) => {
-  if (quitting) return;
-  e.preventDefault();
-  quitting = true;
-  sync?.stop();
+let shutdownStarted = false;
+let shutdownDone = false;
+
+/**
+ * Stops syncing, saves and closes the mailbox, then (if "Back up on exit" is on) copies the closed PST
+ * to the backup folder while the window shows progress. Only then does the app exit.
+ */
+async function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   try {
-    await sync?.flushTrash();
-  } catch {
-    /* ignore */
+    sync?.stop();
+    sync?.stopPolling();
+    if (sync?.running) {
+      send('backup:progress', { phase: 'stopping' });
+      await Promise.race([sync.running.catch(() => {}), new Promise((r) => setTimeout(r, 15000))]);
+    }
+    try {
+      await sync?.flushTrash();
+    } catch {
+      /* messages stay in Gmail; nothing is lost */
+    }
+    await mailbox?.stop();
+
+    const folder = store?.settings.backup?.folder;
+    if (backupOnExit && folder) {
+      backupAbort = new AbortController();
+      send('backup:progress', { phase: 'copying', copied: 0, total: 0, folder });
+      try {
+        const r = await backupPst(store.settings.pstPath, folder, {
+          keep: store.settings.backup.keep,
+          signal: backupAbort.signal,
+          onProgress: (p) => send('backup:progress', { phase: 'copying', ...p, folder }),
+        });
+        store.saveState({ lastBackup: { at: new Date().toISOString(), path: r.path, bytes: r.bytes } });
+        send('backup:progress', { phase: 'done', path: r.path });
+        await new Promise((res) => setTimeout(res, 600));
+      } catch (e) {
+        if (!e.cancelled && win && !win.isDestroyed()) {
+          await dialog.showMessageBox(win, { type: 'error', title: 'Backup failed', message: 'The mailbox backup could not be completed.', detail: `${e.message}
+
+Your mailbox itself is safe. OpenMail will now close.` });
+        }
+      }
+    }
+  } finally {
+    shutdownDone = true;
+    if (win && !win.isDestroyed()) win.destroy();
+    app.quit();
   }
-  await mailbox?.stop();
-  app.quit();
+}
+
+app.on('before-quit', (e) => {
+  if (shutdownDone) return;
+  e.preventDefault();
+  shutdown();
 });
 
 app.on('window-all-closed', () => app.quit());

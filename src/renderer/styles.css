@@ -47,7 +47,23 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .brand img { height: 60px; width: auto; background: #fff; border-radius: 10px; padding: 4px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .setup .setup-logo { height: 110px; width: auto; display: block; margin: 0 0 12px -8px; }
 .search { flex: 0 1 480px; border: none; background: rgba(255,255,255,.92); color: #242424; }
-.account { margin-left: auto; font-size: 13px; }
+.account { font-size: 13px; }
+/* "Back up on exit" switch in the top bar */
+.switch { margin-left: auto; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; user-select: none; padding: 4px 10px; border-radius: 16px; background: rgba(255,255,255,.12); }
+.switch:hover { background: rgba(255,255,255,.2); }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .slider { width: 34px; height: 18px; border-radius: 9px; background: rgba(255,255,255,.35); position: relative; transition: background .15s; flex: none; }
+.switch .slider::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch input:checked + .slider { background: #6fd27a; }
+.switch input:checked + .slider::after { transform: translateX(16px); }
+.switch input:focus-visible + .slider { outline: 2px solid #fff; outline-offset: 2px; }
+/* Backup progress overlay shown while closing */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.overlay[hidden] { display: none; }
+.overlay-card { background: var(--panel); border-radius: 10px; padding: 28px 32px; width: min(520px, 92vw); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+.overlay-card h2 { margin: 0 0 8px; font-weight: 600; }
+.overlay-card progress { width: 100%; height: 14px; margin: 8px 0; }
+.overlay-card .hint { word-break: break-all; }
 
 .ribbon { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .ribbon .sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
