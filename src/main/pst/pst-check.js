@@ -135,6 +135,7 @@ function checkPst(file, { deep = true, log = () => {} } = {}) {
       let slot = 1;
       if (i % 8 === 0) markUse(ib + PAGE * slot++, PAGE, 'PMap');
       if (i >= 128 && (i - 128) % 496 === 0) markUse(ib + PAGE * slot++, PAGE, 'FMap');
+      if (i >= 8192 && (i - 8192) % (496 * 8 * 8) === 0) markUse(ib + PAGE * slot++, PAGE, 'FPMap');
     }
     for (const [ib, size, what] of used) markUse(ib, size, what);
     let free = 0;

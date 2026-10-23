@@ -27,10 +27,13 @@ const BT = {
 const AMAP_BYTES = 496;
 const AMAP_UNITS = AMAP_BYTES * 8;
 // FMap pages cover 496 AMaps each, starting after the 128 AMaps covered by the header's rgbFM;
-// FPMap pages cover 496*8 PMaps, starting after the 128*8 covered by the header's rgbFP.
+// FPMap pages hold one bit per PMap: the header's rgbFP covers the first 128*8 PMaps (8192 AMaps, 2 GB)
+// and each FPMap page covers 496*8 PMaps after that. (Verified against Outlook that there is no FPMap
+// at AMap #1024; the 2 GB position follows the same pattern as the FMap but has not been checked
+// against an Outlook-made file that large.)
 const isPmapIndex = (i) => i % 8 === 0;
 const isFmapIndex = (i) => i >= 128 && (i - 128) % 496 === 0;
-const isFpmapIndex = (i) => i >= 1024 && (i - 1024) % (496 * 8) === 0;
+const isFpmapIndex = (i) => i >= 8192 && (i - 8192) % (496 * 8 * 8) === 0;
 
 const align = (n, a) => Math.ceil(n / a) * a;
 const blockSize = (cb) => align(cb + 16, BLOCK_ALIGN);
