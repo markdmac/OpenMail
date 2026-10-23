@@ -4,19 +4,41 @@
 const api = (channel, ...args) => openmail.call(channel, ...args);
 const $ = (sel) => document.querySelector(sel);
 
+const prefs = (() => {
+  try {
+    return JSON.parse(localStorage.getItem('listPrefs') || '{}');
+  } catch {
+    return {};
+  }
+})();
+
 const S = {
   info: null,
   tree: null,
   folder: 'Inbox',
   items: [],
   total: 0,
-  selected: null, // entryId
-  current: null, // full item
+  senders: null,
+  selection: new Set(), // selected message ids
+  anchor: null, // last clicked id (for Shift-click ranges)
+  focused: null, // id shown in the reading pane
+  current: null, // full item in the reading pane
   search: '',
   unreadOnly: false,
+  sort: prefs.sort || 'date',
+  dir: prefs.dir || 'desc',
+  groupBySender: !!prefs.groupBySender,
   allowRemote: new Set(),
   log: [],
 };
+
+function savePrefs() {
+  try {
+    localStorage.setItem('listPrefs', JSON.stringify({ sort: S.sort, dir: S.dir, groupBySender: S.groupBySender }));
+  } catch {
+    /* ignore */
+  }
+}
 
 // ---------- tiny DOM helper ----------
 function h(tag, props = {}, ...children) {
@@ -163,7 +185,12 @@ function renderTree() {
         oncontextmenu: (e) => folderMenu(e, n),
         ondragover: (e) => { e.preventDefault(); node.classList.add('drop'); },
         ondragleave: () => node.classList.remove('drop'),
-        ondrop: (e) => { e.preventDefault(); node.classList.remove('drop'); moveSelectedTo(n.path, e.dataTransfer.getData('text/entry-id')); },
+        ondrop: (e) => {
+          e.preventDefault();
+          node.classList.remove('drop');
+          const ids = JSON.parse(e.dataTransfer.getData('text/openmail-ids') || '[]');
+          if (ids.length) moveIds(ids, n.path);
+        },
       },
       h('span', { class: 'twisty', onclick: (e) => {
         e.stopPropagation();
@@ -172,7 +199,7 @@ function renderTree() {
         localStorage.setItem('collapsed', JSON.stringify([...collapsed]));
         renderTree();
       } }, hasKids ? (isCollapsed ? '▶' : '▼') : ''),
-      h('span', {}, n.name),
+      h('span', {}, n.isDeletedItems ? `🗑 ${n.name}` : n.name),
       n.unread ? h('span', { class: 'count' }, n.unread) : null);
       const li = h('li', {}, node);
       if (hasKids && !isCollapsed) {
@@ -202,20 +229,30 @@ function selectFolder(path) {
   loadItems(true);
 }
 
-function folderMenu(e, n) {
+function contextMenu(e, entries) {
   e.preventDefault();
   document.querySelector('.ctx')?.remove();
-  const menu = h('div', { class: 'ctx modal', style: `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:200px;z-index:20;padding:4px` },
-    h('button', { style: 'width:100%;text-align:left', onclick: () => newFolder(n.path) }, 'New subfolder…'),
-    h('button', { style: 'width:100%;text-align:left', onclick: () => renameFolder(n) }, 'Rename…'),
-    h('button', { style: 'width:100%;text-align:left;color:var(--danger)', onclick: () => deleteFolder(n) }, 'Delete folder'));
+  const menu = h('div', { class: 'ctx modal', style: `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:240px;z-index:20;padding:4px` },
+    entries.filter(Boolean).map(([label, fn, danger]) => h('button', { style: `width:100%;text-align:left;${danger ? 'color:var(--danger)' : ''}`, onclick: fn }, label)));
   document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  if (r.bottom > innerHeight) menu.style.top = `${Math.max(0, innerHeight - r.height - 8)}px`;
+  if (r.right > innerWidth) menu.style.left = `${Math.max(0, innerWidth - r.width - 8)}px`;
   setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+}
+
+function folderMenu(e, n) {
+  contextMenu(e, [
+    ['New subfolder…', () => newFolder(n.path)],
+    n.isDeletedItems ? null : ['Rename…', () => renameFolder(n)],
+    n.isDeletedItems ? ['Empty Deleted Items…', emptyDeletedItems, true] : ['Delete folder', () => deleteFolder(n), true],
+  ]);
 }
 
 async function newFolder(parent = '') {
   const name = await promptModal('New folder', parent ? `Create a folder inside "${parent}":` : 'Folder name:');
   if (!name) return;
+  if (name.includes('/')) return toast('Folder names cannot contain "/"', true);
   await guard(async () => {
     await api('folders:create', parent ? `${parent}/${name}` : name);
     await loadFolders();
@@ -233,7 +270,7 @@ async function renameFolder(n) {
 }
 
 async function deleteFolder(n) {
-  if (!(await confirmModal('Delete folder', `Delete "${n.path}" and everything in it? Outlook moves it to Deleted Items.`, 'Delete', true))) return;
+  if (!(await confirmModal('Delete folder', `Move "${n.path}" and everything in it to Deleted Items?`, 'Delete', true))) return;
   await guard(async () => {
     await api('folders:delete', n.path);
     await loadFolders();
@@ -241,50 +278,183 @@ async function deleteFolder(n) {
   });
 }
 
+async function emptyDeletedItems() {
+  if (!(await confirmModal('Empty Deleted Items', 'Permanently delete everything in Deleted Items? This cannot be undone.', 'Empty', true))) return;
+  await guard(async () => {
+    await api('mailbox:emptyDeleted');
+    await loadFolders();
+    loadItems(true);
+    toast('Deleted Items emptied');
+  });
+}
+
 // ---------- message list ----------
+const PAGE_SIZE = 300;
 let listToken = 0;
+
 async function loadItems(reset) {
   const token = ++listToken;
   if (reset) {
     S.items = [];
-    S.selected = null;
+    S.selection.clear();
+    S.anchor = null;
     $('#message-list').replaceChildren(h('li', { class: 'empty' }, 'Loading…'));
   }
   $('#folder-title').textContent = S.folder ? S.folder.split('/').pop() : 'Folders';
+  renderListHeader();
   if (!S.folder) {
     $('#message-list').replaceChildren(h('li', { class: 'empty' }, 'No folders yet. Run a sync to download your mail.'));
     return;
   }
-  const res = await guard(() => api('items:list', { folderPath: S.folder, offset: S.items.length, limit: 150, search: S.search, unreadOnly: S.unreadOnly }));
+  const res = await guard(() => api('items:list', { folderPath: S.folder, offset: S.items.length, limit: PAGE_SIZE, sort: S.sort, dir: S.dir, search: S.search, unreadOnly: S.unreadOnly }));
   if (!res || token !== listToken) return;
   S.items = S.items.concat(res.items || []);
   S.total = res.total;
+  S.senders = res.senders;
   renderList();
+}
+
+function renderListHeader() {
+  const head = $('#list-columns');
+  const col = (key, label, cls) => h('button', {
+    class: `col ${cls || ''} ${S.sort === key ? 'sorted' : ''}`,
+    title: `Sort by ${label.toLowerCase()}`,
+    onclick: () => {
+      if (S.sort === key) S.dir = S.dir === 'asc' ? 'desc' : 'asc';
+      else {
+        S.sort = key;
+        S.dir = key === 'date' || key === 'size' ? 'desc' : 'asc';
+      }
+      savePrefs();
+      loadItems(true);
+    },
+  }, label, S.sort === key ? (S.dir === 'asc' ? ' ▲' : ' ▼') : '');
+  head.replaceChildren(
+    h('input', { type: 'checkbox', class: 'select-all', title: 'Select all loaded messages', checked: S.items.length > 0 && S.selection.size === S.items.length, onchange: (e) => { if (e.target.checked) S.items.forEach((m) => S.selection.add(m.id)); else S.selection.clear(); renderList(); } }),
+    col('from', 'From', 'grow'),
+    col('subject', 'Subject', 'grow'),
+    col('date', 'Received'),
+    col('size', 'Size'),
+    h('label', { class: 'filter', title: 'Group messages from the same sender together' }, h('input', { type: 'checkbox', checked: S.groupBySender, onchange: (e) => {
+      S.groupBySender = e.target.checked;
+      if (S.groupBySender && S.sort !== 'from') { S.sort = 'from'; S.dir = 'asc'; }
+      savePrefs();
+      loadItems(true);
+    } }), ' Group by sender'));
+}
+
+function rowFor(it) {
+  const selected = S.selection.has(it.id);
+  return h('li', {
+    class: `${it.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${it.id === S.focused ? 'focused' : ''}`,
+    draggable: 'true',
+    ondragstart: (e) => {
+      if (!S.selection.has(it.id)) selectOnly(it.id);
+      e.dataTransfer.setData('text/openmail-ids', JSON.stringify([...S.selection]));
+      e.dataTransfer.effectAllowed = 'move';
+    },
+    onclick: (e) => onRowClick(e, it),
+    oncontextmenu: (e) => {
+      if (!S.selection.has(it.id)) selectOnly(it.id);
+      itemMenu(e, it);
+    },
+    'data-id': it.id,
+  },
+  h('input', { type: 'checkbox', class: 'pick', checked: selected, onclick: (e) => { e.stopPropagation(); toggleSelect(it.id); } }),
+  h('div', { class: 'cells' },
+    h('div', { class: 'row1' }, h('span', { class: 'from' }, it.from || '(no sender)'),
+      h('span', { class: 'icons' }, it.importance === 2 ? h('span', { class: 'flag', title: 'High importance' }, '! ') : '', it.hasAttachments ? '📎' : '')),
+    h('div', { class: 'row2' }, h('span', { class: 'subject' }, it.subject || '(no subject)'), h('span', { class: 'date' }, fmtDate(it.date)), h('span', { class: 'size' }, fmtSize(it.size || 0)))));
 }
 
 function renderList() {
   const ul = $('#message-list');
   ul.replaceChildren();
   if (!S.items.length) ul.append(h('li', { class: 'empty' }, S.search ? 'No matches.' : 'This folder is empty.'));
+  let lastSender = null;
   for (const it of S.items) {
-    ul.append(h('li', {
-      class: `${it.unread ? 'unread' : ''} ${it.entryId === S.selected ? 'selected' : ''}`,
-      draggable: 'true',
-      ondragstart: (e) => e.dataTransfer.setData('text/entry-id', it.entryId),
-      onclick: () => openItem(it.entryId),
-      'data-id': it.entryId,
-    },
-    h('div', { class: 'row1' }, h('span', { class: 'from' }, it.from || it.fromAddress || '(no sender)'),
-      h('span', { class: 'icons' }, it.hasAttachments ? '📎' : '', it.flagged ? h('span', { class: 'flag' }, ' ⚑') : '')),
-    h('div', { class: 'row2' }, h('span', { class: 'subject' }, it.subject || '(no subject)'), h('span', { class: 'date' }, fmtDate(it.date))),
-    it.categories ? h('div', { class: 'cats' }, it.categories) : null));
+    if (S.groupBySender && S.sort === 'from' && it.from !== lastSender) {
+      lastSender = it.from;
+      const count = S.senders ? S.senders[it.from || ''] : null;
+      const sender = it.from || '';
+      ul.append(h('li', { class: 'group' },
+        h('span', { class: 'name' }, sender || '(no sender)'),
+        count ? h('span', { class: 'count' }, `${count}`) : null,
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'link', title: 'Select every message from this sender in this folder', onclick: () => selectSender(sender) }, 'Select all'),
+        h('button', { class: 'link', title: 'Move every message from this sender', onclick: async () => { const ids = await senderIds(sender); const p = await pickFolder(`Move ${ids.length} message(s) from ${sender || '(no sender)'}`); if (p) moveIds(ids, p); } }, 'Move all…'),
+        h('button', { class: 'link danger-link', title: 'Delete every message from this sender', onclick: async () => deleteIds(await senderIds(sender), `all ${count || ''} message(s) from ${sender || '(no sender)'}`) }, 'Delete all')));
+    }
+    ul.append(rowFor(it));
   }
   $('#load-more').hidden = S.items.length >= S.total;
+  $('#load-more').textContent = `Load more (${(S.total - S.items.length).toLocaleString()} remaining)`;
+  $('#list-count').textContent = S.total ? `${S.total.toLocaleString()} message${S.total === 1 ? '' : 's'}${S.selection.size ? ` · ${S.selection.size.toLocaleString()} selected` : ''}` : '';
+  const all = document.querySelector('.select-all');
+  if (all) all.checked = S.items.length > 0 && S.items.every((m) => S.selection.has(m.id));
   updateRibbon();
 }
 
+async function senderIds(sender) {
+  return api('items:idsFromSender', S.folder, sender);
+}
+
+async function selectSender(sender) {
+  const ids = await guard(() => senderIds(sender));
+  if (!ids) return;
+  S.selection = new Set(ids);
+  renderList();
+  renderSelectionPane();
+  toast(`${ids.length} message(s) from ${sender || '(no sender)'} selected`);
+}
+
+function selectOnly(id) {
+  S.selection = new Set([id]);
+  S.anchor = id;
+}
+
+function toggleSelect(id) {
+  if (S.selection.has(id)) S.selection.delete(id);
+  else S.selection.add(id);
+  S.anchor = id;
+  renderList();
+  renderSelectionPane();
+}
+
+function onRowClick(e, it) {
+  if (e.shiftKey && S.anchor !== null) {
+    const a = S.items.findIndex((m) => m.id === S.anchor);
+    const b = S.items.findIndex((m) => m.id === it.id);
+    if (!(e.ctrlKey || e.metaKey)) S.selection.clear();
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) S.selection.add(S.items[i].id);
+    renderList();
+    renderSelectionPane();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) return toggleSelect(it.id);
+  selectOnly(it.id);
+  renderList();
+  openItem(it.id);
+}
+
+function itemMenu(e, it) {
+  const n = S.selection.size;
+  const label = n > 1 ? `${n} messages` : 'message';
+  contextMenu(e, [
+    n === 1 ? ['Reply', () => openItem(it.id).then(() => compose('reply'))] : null,
+    [`Mark ${label} as read`, () => setRead([...S.selection], true)],
+    [`Mark ${label} as unread`, () => setRead([...S.selection], false)],
+    [`Flag ${label}`, () => setFlag([...S.selection], true)],
+    [`Move ${label}…`, async () => { const p = await pickFolder('Move to folder'); if (p) moveIds([...S.selection], p); }],
+    [`Select all from ${it.from || '(no sender)'}`, () => selectSender(it.from || '')],
+    [`Delete ${label}`, () => deleteIds([...S.selection]), true],
+  ]);
+}
+
 function updateRibbon() {
-  document.querySelectorAll('[data-needs-item]').forEach((b) => (b.disabled = !S.selected));
+  const n = S.selection.size;
+  document.querySelectorAll('[data-needs-item]').forEach((b) => (b.disabled = n === 0));
+  document.querySelectorAll('[data-needs-one]').forEach((b) => (b.disabled = !S.current || n > 1));
 }
 
 // ---------- reading pane ----------
@@ -304,29 +474,45 @@ function buildSrcdoc(item, allowRemote) {
   return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + head) : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
 }
 
-async function openItem(entryId) {
-  S.selected = entryId;
-  document.querySelectorAll('#message-list li').forEach((li) => li.classList.toggle('selected', li.dataset.id === entryId));
-  updateRibbon();
-  const item = await guard(() => api('items:get', entryId));
-  if (!item || S.selected !== entryId) return;
+async function openItem(id) {
+  S.focused = id;
+  document.querySelectorAll('#message-list li[data-id]').forEach((li) => li.classList.toggle('focused', Number(li.dataset.id) === id));
+  const item = await guard(() => api('items:get', id));
+  if (!item || S.focused !== id) return;
   S.current = item;
   renderReader();
+  updateRibbon();
   if (item.unread) {
     setTimeout(async () => {
-      if (S.selected !== entryId) return;
-      await guard(() => api('items:setRead', [entryId], false));
-      markLocal(entryId, { unread: false });
+      if (S.focused !== id) return;
+      await guard(() => api('items:setRead', [id], true));
+      markLocal([id], { unread: false });
     }, 1200);
   }
 }
 
-function markLocal(entryId, patch) {
-  const it = S.items.find((x) => x.entryId === entryId);
-  if (it) Object.assign(it, patch);
-  if (S.current?.entryId === entryId) Object.assign(S.current, patch);
+function markLocal(ids, patch) {
+  const set = new Set(ids);
+  for (const it of S.items) if (set.has(it.id)) Object.assign(it, patch);
+  if (S.current && set.has(S.current.id)) Object.assign(S.current, patch);
   renderList();
   loadFolders().catch(() => {});
+}
+
+function renderSelectionPane() {
+  if (S.selection.size <= 1) return;
+  const n = S.selection.size;
+  S.current = null;
+  S.focused = null;
+  $('#reader').replaceChildren(h('div', { class: 'multi' },
+    h('h2', {}, `${n.toLocaleString()} messages selected`),
+    h('div', { class: 'row' },
+      h('button', { onclick: async () => { const p = await pickFolder(`Move ${n} messages`); if (p) moveIds([...S.selection], p); } }, '📁 Move…'),
+      h('button', { onclick: () => setRead([...S.selection], true) }, 'Mark read'),
+      h('button', { onclick: () => setRead([...S.selection], false) }, 'Mark unread'),
+      h('button', { class: 'danger', onclick: () => deleteIds([...S.selection]) }, '🗑 Delete')),
+    h('p', { class: 'hint' }, 'Tip: sort by From (or turn on "Group by sender") to clean up everything from one sender at once.')));
+  updateRibbon();
 }
 
 function renderReader() {
@@ -337,64 +523,91 @@ function renderReader() {
     reader.append(h('div', { class: 'empty' }, 'Select a message to read it'));
     return;
   }
-  const allow = S.allowRemote.has(item.entryId);
+  const allow = S.allowRemote.has(item.id);
   const hasRemote = /<img[^>]+src=["']?https?:/i.test(item.html || '') || /url\(\s*['"]?https?:/i.test(item.html || '');
-  reader.append(
+  // DOM append() would print missing sections as the text "null", so filter them out.
+  reader.append(...[
     h('div', { class: 'head' },
       h('h1', {}, item.subject || '(no subject)'),
       h('div', { class: 'meta' },
         h('span', { class: 'k' }, 'From'), h('span', {}, item.from, item.fromAddress && item.fromAddress !== item.from ? ` <${item.fromAddress}>` : ''), h('span', { class: 'k' }, fmtDate(item.date, true)),
         h('span', { class: 'k' }, 'To'), h('span', {}, item.to || ''), h('span'),
         item.cc ? [h('span', { class: 'k' }, 'Cc'), h('span', {}, item.cc), h('span')] : null,
-        item.categories ? [h('span', { class: 'k' }, 'Categories'), h('span', {}, item.categories), h('span')] : null)),
+        item.categories ? [h('span', { class: 'k' }, 'Categories'), h('span', {}, item.categories), h('span')] : null,
+        h('span', { class: 'k' }, 'Folder'), h('span', {}, item.folderPath), h('span'))),
     item.attachments?.length
       ? h('div', { class: 'attachments' }, item.attachments.map((a) =>
-        h('button', { title: 'Save attachment', onclick: () => guard(() => api('items:saveAttachment', item.entryId, a.index, a.name)) }, `📎 ${a.name} (${fmtSize(a.size)})`)))
+        h('button', { title: 'Click to open · right-click to save', onclick: () => guard(() => api('items:openAttachment', item.id, a.id, a.name)), oncontextmenu: (e) => { e.preventDefault(); guard(() => api('items:saveAttachment', item.id, a.id, a.name)); } }, `📎 ${a.name} (${fmtSize(a.size)})`)))
       : null,
     hasRemote && !allow
       ? h('div', { class: 'notice' }, 'Remote images were blocked to protect your privacy. ',
-        h('button', { class: 'link', onclick: () => { S.allowRemote.add(item.entryId); renderReader(); } }, 'Show images'))
+        h('button', { class: 'link', onclick: () => { S.allowRemote.add(item.id); renderReader(); } }, 'Show images'))
       : null,
-    h('iframe', { sandbox: 'allow-popups allow-popups-to-escape-sandbox', srcdoc: buildSrcdoc(item, allow), title: 'Message body' }));
+    h('iframe', { sandbox: 'allow-popups allow-popups-to-escape-sandbox', srcdoc: buildSrcdoc(item, allow), title: 'Message body' }),
+  ].filter(Boolean));
 }
 
-// ---------- item actions ----------
+// ---------- item actions (all work on the current selection) ----------
 function selectedIds() {
-  return S.selected ? [S.selected] : [];
+  return [...S.selection];
 }
 
-function selectNeighbour(removedId) {
-  const idx = S.items.findIndex((x) => x.entryId === removedId);
-  S.items = S.items.filter((x) => x.entryId !== removedId);
-  S.total--;
-  const next = S.items[Math.min(idx, S.items.length - 1)];
-  S.selected = null;
+function removeFromList(ids) {
+  const set = new Set(ids);
+  const firstIdx = S.items.findIndex((x) => set.has(x.id));
+  S.items = S.items.filter((x) => !set.has(x.id));
+  S.total = Math.max(0, S.total - ids.length);
+  S.selection.clear();
+  const next = S.items[Math.min(Math.max(firstIdx, 0), S.items.length - 1)];
   S.current = null;
+  S.focused = null;
   renderList();
   renderReader();
-  if (next) openItem(next.entryId);
+  if (next && ids.length === 1) {
+    selectOnly(next.id);
+    renderList();
+    openItem(next.id);
+  }
 }
 
-async function deleteSelected() {
-  const id = S.selected;
-  if (!id) return;
-  const inDeleted = /deleted items$/i.test(S.folder);
-  if (inDeleted && !(await confirmModal('Delete permanently', 'This message is in Deleted Items. Delete it permanently from the PST?', 'Delete', true))) return;
+async function deleteIds(ids, what) {
+  if (!ids.length) return;
+  const inDeleted = flattenFolders(S.tree?.children).find((f) => f.path === S.folder)?.isDeletedItems || false;
+  const label = what || (ids.length === 1 ? 'this message' : `${ids.length.toLocaleString()} messages`);
+  if (inDeleted && !(await confirmModal('Delete permanently', `Permanently delete ${label}? They are already in Deleted Items.`, 'Delete', true))) return;
+  if (!inDeleted && ids.length > 1 && !(await confirmModal('Delete messages', `Move ${label} to Deleted Items?`, 'Delete', true))) return;
   await guard(async () => {
-    await api('items:delete', [id]);
-    selectNeighbour(id);
+    await api('items:delete', ids);
+    removeFromList(ids);
     loadFolders();
+    toast(inDeleted ? `Deleted ${ids.length} message(s)` : `Moved ${ids.length} message(s) to Deleted Items`);
   });
 }
 
-async function moveSelectedTo(folderPath, entryId) {
-  const id = entryId || S.selected;
-  if (!id || folderPath === S.folder) return;
+async function moveIds(ids, folderPath) {
+  if (!ids.length || folderPath === S.folder) return;
   await guard(async () => {
-    await api('items:move', [id], folderPath);
-    selectNeighbour(id);
+    await api('items:move', ids, folderPath);
+    removeFromList(ids);
     loadFolders();
-    toast(`Moved to ${folderPath}`);
+    toast(`Moved ${ids.length} message(s) to ${folderPath}`);
+  });
+}
+
+async function setRead(ids, read) {
+  if (!ids.length) return;
+  await guard(async () => {
+    await api('items:setRead', ids, read);
+    markLocal(ids, { unread: !read });
+  });
+}
+
+async function setFlag(ids, flagged) {
+  if (!ids.length) return;
+  await guard(async () => {
+    await api('items:flag', ids, flagged);
+    if (S.current && ids.includes(S.current.id)) S.current.flagged = flagged;
+    toast(flagged ? 'Flagged' : 'Flag cleared');
   });
 }
 
@@ -418,21 +631,16 @@ function pickFolder(title) {
 }
 
 async function toggleUnread() {
-  const it = S.items.find((x) => x.entryId === S.selected);
-  if (!it) return;
-  await guard(async () => {
-    await api('items:setRead', [it.entryId], !it.unread);
-    markLocal(it.entryId, { unread: !it.unread });
-  });
+  const ids = selectedIds();
+  if (!ids.length) return;
+  const anyUnread = S.items.some((m) => ids.includes(m.id) && m.unread);
+  await setRead(ids, anyUnread);
 }
 
 async function toggleFlag() {
-  const it = S.items.find((x) => x.entryId === S.selected);
-  if (!it) return;
-  await guard(async () => {
-    await api('items:flag', [it.entryId], !it.flagged);
-    markLocal(it.entryId, { flagged: !it.flagged });
-  });
+  const ids = selectedIds();
+  if (!ids.length) return;
+  await setFlag(ids, !(S.current && S.current.flagged && ids.length === 1));
 }
 
 // ---------- compose ----------
@@ -541,8 +749,14 @@ async function openSettings() {
   };
   renderAccount();
 
+  const mb = S.info.mailbox;
+  const mailboxStatus = h('span', {},
+    S.info.mailboxError ? h('span', { style: 'color:var(--danger)' }, S.info.mailboxError)
+      : mb ? `${mb.unicode ? 'Unicode PST' : 'Old ANSI PST (read-only, 2 GB limit)'} · ${fmtSize(mb.size)}` : '');
+  const checkResult = h('div', { class: 'full hint' });
+
   const trashWarn = h('div', { class: 'warn full' },
-    'Gmail permanently deletes messages that have been in Trash for 30 days. Once trashing is on, check the PST (or the .eml backup) before Gmail empties its Trash. To keep a message in Gmail, move it out of Trash within 30 days; OpenMail will not process it again.');
+    'Gmail permanently deletes messages that have been in Trash for 30 days. Once trashing is on, check the mailbox (or the .eml backup) before Gmail empties its Trash. To keep a message in Gmail, move it out of Trash within 30 days; OpenMail will not process it again.');
 
   const close = modal({
     title: 'Settings',
@@ -554,16 +768,27 @@ async function openSettings() {
       h('span'), h('span', { class: 'hint' }, 'Create a "Desktop app" OAuth client in Google Cloud Console with the Gmail API enabled. Step-by-step instructions are in the README.'),
       h('label', {}, 'Account'), account,
 
-      h('h3', {}, 'Mailbox (PST)'),
+      h('h3', {}, 'Mailbox (PST file)'),
       h('label', {}, 'PST file'), h('div', { class: 'row' }, pstInput, h('button', { onclick: async () => { const p = await api('dialog:pickPst'); if (p) { s.pstPath = p; pstInput.value = p; } } }, 'Browse…')),
-      h('label', {}, 'Display name in Outlook'), field(s, 'pstDisplayName'),
-      h('span'), h('span', { class: 'hint' }, 'The PST opens in your installed Outlook, so you can also browse it there. A Unicode PST holds up to 50 GB by default.'),
+      h('label', {}, 'Status'), mailboxStatus,
+      h('label', {}, 'Display name'), field(s, 'pstDisplayName'),
+      h('span'), h('span', { class: 'hint' }, 'OpenMail reads and writes the PST itself; Outlook is not needed. You can also open the same file in Outlook, but not while OpenMail has it open.'),
+      h('label', {}, 'Tools'), h('div', { class: 'row' },
+        h('button', { onclick: () => { close(); importPstFlow(); } }, 'Import a PST…'),
+        mb && !mb.unicode ? h('button', { class: 'primary', onclick: () => { close(); convertFlow(); } }, 'Convert to Unicode PST…') : null,
+        h('button', { onclick: async () => {
+          checkResult.textContent = 'Checking the mailbox file…';
+          const r = await guard(() => api('mailbox:check'));
+          if (!r) return (checkResult.textContent = '');
+          checkResult.textContent = r.problems.length ? `Found ${r.problems.length} problem(s): ${r.problems.slice(0, 5).join('; ')}` : 'No problems found.';
+        } }, 'Check file')),
+      checkResult,
 
       h('h3', {}, 'Sync behaviour'),
       h('label', {}, 'Check for new mail every'), h('div', { class: 'row' }, field(s, 'pollMinutes', { type: 'number', min: 1, style: 'width:80px' }), 'minutes'),
       h('label', {}, 'Initial sync'), check(s.sync, 'trashDuringInitialSync', 'Also move messages to Gmail Trash during the initial sync'),
       h('label', {}, 'New mail'), check(s.sync, 'newMailUnreadOnly', 'Only download new mail that is still unread (already-read mail stays in Gmail and is ignored)'),
-      h('span'), check(s.sync, 'trashNewMail', 'Move new mail to Gmail Trash after it is safely in the PST'),
+      h('span'), check(s.sync, 'trashNewMail', 'Move new mail to Gmail Trash after it is safely saved in the mailbox'),
       h('label', {}, 'Sent mail'), check(s.sync, 'archiveSent', 'Archive sent mail to "Sent Items"'),
       h('span'), check(s.sync, 'trashSent', 'Also move sent mail to Gmail Trash'),
       h('label', {}, 'Spam'), check(s.sync, 'excludeSpam', 'Never download Gmail Spam'),
@@ -577,13 +802,13 @@ async function openSettings() {
       h('h3', {}, 'Maintenance'),
       h('label', {}, 'Initial sync status'), h('span', {}, S.info.state.initialSyncComplete ? `Complete. Last sync ${S.info.state.lastSyncAt ? new Date(S.info.state.lastSyncAt).toLocaleString() : 'never'}` : S.info.state.initialStartedAt ? 'In progress (resumes automatically)' : 'Not started'),
       h('span'), h('div', { class: 'row' },
-        h('button', { onclick: async () => { if (await confirmModal('Restart initial sync', 'Run a fresh initial sync? Messages already in the PST are skipped.', 'Restart')) { await guard(() => api('sync:resetInitial')); toast('Initial sync will restart on next sync'); } } }, 'Restart initial sync'),
+        h('button', { onclick: async () => { if (await confirmModal('Restart initial sync', 'Run a fresh initial sync? Messages already downloaded are skipped.', 'Restart')) { await guard(() => api('sync:resetInitial')); toast('Initial sync will restart on next sync'); } } }, 'Restart initial sync'),
         h('button', { onclick: () => api('shell:openPath', s.sync.emlBackupDir) }, 'Open backup folder'))),
     footer: [
       h('button', { onclick: () => close() }, 'Cancel'),
       h('button', { class: 'primary', onclick: async () => {
         if (s.sync.trashingEnabled && !S.info.settings.sync.trashingEnabled) {
-          const ok = await confirmModal('Enable Gmail trashing?', 'OpenMail will move downloaded messages to Gmail Trash, and Gmail permanently deletes Trash after 30 days. Make sure the PST and backups look right first.', 'Enable trashing', true);
+          const ok = await confirmModal('Enable Gmail trashing?', 'OpenMail will move downloaded messages to Gmail Trash, and Gmail permanently deletes Trash after 30 days. Make sure your mailbox and backups look right first.', 'Enable trashing', true);
           if (!ok) return;
         }
         const saved = await guard(() => api('settings:save', s));
@@ -596,6 +821,30 @@ async function openSettings() {
       } }, 'Save'),
     ],
   });
+}
+
+async function importPstFlow() {
+  const prefix = await promptModal('Import a PST', 'Import into a folder named (leave empty to merge into your existing folders):', 'Imported');
+  if (prefix === null) return;
+  toast('Choose the PST file to import…');
+  const r = await guard(() => api('mailbox:import', null, prefix));
+  if (!r) return;
+  await loadFolders();
+  loadItems(true);
+  toast(`Imported ${r.messages.toLocaleString()} messages (${r.duplicates.toLocaleString()} duplicates skipped${r.errors ? `, ${r.errors} errors — see Activity` : ''})`, r.errors > 0);
+}
+
+async function convertFlow() {
+  const ok = await confirmModal('Convert mailbox',
+    'Your mailbox is in the old ANSI PST format, which OpenMail can read but not write, and which is limited to 2 GB. OpenMail will copy everything into a new Unicode PST next to it and switch to that. The old file is left unchanged.', 'Convert');
+  if (!ok) return;
+  const r = await guard(() => api('mailbox:convert'));
+  if (!r) return;
+  S.info = await api('app:info');
+  hideBanner();
+  await loadFolders();
+  loadItems(true);
+  toast(`Converted: ${r.converted ? r.converted.messages.toLocaleString() : 0} messages copied to ${r.path}`);
 }
 
 // ---------- rules ----------
@@ -725,6 +974,17 @@ function renderAccountBadge() {
   $('#totals').textContent = `Downloaded ${t.downloaded || 0} · Trashed in Gmail ${t.trashed || 0} · Ignored ${t.ignored || 0}${t.errors ? ` · Errors ${t.errors}` : ''}${S.info.settings.sync.trashingEnabled ? '' : ' · Gmail trashing OFF'}`;
 }
 
+function showBanner(content, kind = 'warn') {
+  const b = $('#banner');
+  b.className = `banner ${kind}`;
+  b.replaceChildren(...[].concat(content));
+  b.hidden = false;
+}
+
+function hideBanner() {
+  $('#banner').hidden = true;
+}
+
 let refreshTimer = null;
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
@@ -732,7 +992,7 @@ function scheduleRefresh() {
     S.info = await api('app:info');
     renderAccountBadge();
     await loadFolders().catch(() => {});
-    if (!S.search && S.items.length < 150) loadItems(true);
+    if (!S.search && S.items.length <= PAGE_SIZE && S.selection.size <= 1) loadItems(true);
   }, 3000);
 }
 
@@ -743,9 +1003,17 @@ async function initMailbox() {
   if (!s.google.clientId || !S.info.signedIn) {
     $('#reader').replaceChildren($('#tpl-setup').content.cloneNode(true));
   }
-  toast('Opening PST in Outlook…');
+  if (S.info.mailboxError) {
+    showBanner([h('span', {}, `Could not open the mailbox: ${S.info.mailboxError} `), h('button', { onclick: async () => { S.info = await api('app:info'); initMailbox(); } }, 'Try again')], 'error');
+    return;
+  }
+  const mb = S.info.mailbox;
+  if (mb && !mb.unicode) {
+    showBanner([h('span', {}, 'This mailbox is in the old ANSI PST format: read-only here and limited to 2 GB. '), h('button', { class: 'primary', onclick: convertFlow }, 'Convert to Unicode…')]);
+  } else {
+    hideBanner();
+  }
   const ok = await guard(async () => {
-    await api('pst:open');
     await loadFolders();
     return true;
   });
@@ -760,11 +1028,11 @@ function bindUi() {
   $('#btn-reply').onclick = () => S.current && compose('reply');
   $('#btn-replyall').onclick = () => S.current && compose('replyAll');
   $('#btn-forward').onclick = () => S.current && compose('forward');
-  $('#btn-delete').onclick = deleteSelected;
-  $('#btn-move').onclick = async () => { const p = await pickFolder('Move to folder'); if (p) moveSelectedTo(p); };
+  $('#btn-delete').onclick = () => deleteIds(selectedIds());
+  $('#btn-move').onclick = async () => { const ids = selectedIds(); const p = await pickFolder(`Move ${ids.length} message(s)`); if (p) moveIds(ids, p); };
   $('#btn-unread').onclick = toggleUnread;
   $('#btn-flag').onclick = toggleFlag;
-  $('#btn-outlook').onclick = () => S.selected && guard(() => api('items:openInOutlook', S.selected));
+  $('#btn-import').onclick = importPstFlow;
   $('#btn-sync').onclick = () => guard(async () => {
     if (!S.info.signedIn) return openSettings();
     await api('sync:now');
@@ -782,24 +1050,40 @@ function bindUi() {
   document.addEventListener('keydown', (e) => {
     if (document.querySelector('.backdrop') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable) return;
     const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key.toLowerCase() === 'n') { e.preventDefault(); compose(); }
-    else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); S.current && compose('replyAll'); }
-    else if (ctrl && e.key.toLowerCase() === 'r') { e.preventDefault(); S.current && compose('reply'); }
-    else if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); S.current && compose('forward'); }
-    else if (ctrl && (e.key.toLowerCase() === 'q' || e.key.toLowerCase() === 'u')) { e.preventDefault(); toggleUnread(); }
-    else if (ctrl && e.key.toLowerCase() === 'e') { e.preventDefault(); $('#search').focus(); }
-    else if (e.key === 'Delete') deleteSelected();
+    const key = e.key.toLowerCase();
+    if (ctrl && key === 'n') { e.preventDefault(); compose(); }
+    else if (ctrl && e.shiftKey && key === 'r') { e.preventDefault(); S.current && compose('replyAll'); }
+    else if (ctrl && key === 'r') { e.preventDefault(); S.current && compose('reply'); }
+    else if (ctrl && key === 'f') { e.preventDefault(); S.current && compose('forward'); }
+    else if (ctrl && key === 'q') { e.preventDefault(); setRead(selectedIds(), true); }
+    else if (ctrl && key === 'u') { e.preventDefault(); setRead(selectedIds(), false); }
+    else if (ctrl && key === 'a') { e.preventDefault(); S.items.forEach((m) => S.selection.add(m.id)); renderList(); renderSelectionPane(); }
+    else if (ctrl && key === 'e') { e.preventDefault(); $('#search').focus(); }
+    else if (ctrl && e.shiftKey && key === 'v') { e.preventDefault(); $('#btn-move').click(); }
+    else if (e.key === 'Delete') deleteIds(selectedIds());
     else if (e.key === 'F9') $('#btn-sync').click();
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const idx = S.items.findIndex((x) => x.entryId === S.selected);
+      const idx = S.items.findIndex((x) => x.id === (S.focused ?? S.anchor));
       const next = S.items[idx + (e.key === 'ArrowDown' ? 1 : -1)];
-      if (next) { e.preventDefault(); openItem(next.entryId); document.querySelector(`#message-list li[data-id="${CSS.escape(next.entryId)}"]`)?.scrollIntoView({ block: 'nearest' }); }
+      if (!next) return;
+      e.preventDefault();
+      if (e.shiftKey) { S.selection.add(next.id); S.anchor = next.id; S.focused = next.id; renderList(); renderSelectionPane(); }
+      else { selectOnly(next.id); renderList(); openItem(next.id); }
+      document.querySelector(`#message-list li[data-id="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
     }
   });
 
   openmail.on('sync:status', (st) => {
     renderStatus(st);
     if (st.phase === 'idle' || st.done % 50 === 0) scheduleRefresh();
+  });
+  openmail.on('import:progress', (p) => {
+    $('#status-text').textContent = `Importing ${p.folder || ''}: ${p.done.toLocaleString()} of ${p.total.toLocaleString()} (${p.messages.toLocaleString()} copied, ${p.duplicates.toLocaleString()} duplicates)`;
+    const prog = $('#status-progress');
+    prog.hidden = p.done >= p.total;
+    prog.max = p.total || 1;
+    prog.value = p.done;
+    if (p.error) S.log.push(`Import error: ${p.error}`);
   });
   openmail.on('log', (line) => { S.log.push(line); if (S.log.length > 2000) S.log.shift(); });
 }

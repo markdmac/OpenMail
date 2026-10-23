@@ -11,7 +11,7 @@ async function call(channel, ...args) {
 contextBridge.exposeInMainWorld('openmail', {
   call,
   on(channel, cb) {
-    const allowed = ['sync:status', 'log'];
+    const allowed = ['sync:status', 'log', 'import:progress'];
     if (!allowed.includes(channel)) throw new Error(`Unknown event ${channel}`);
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on(channel, listener);

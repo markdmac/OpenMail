@@ -61,7 +61,7 @@ class Store {
     };
     const docs = app.getPath('documents');
     const defaults = deepMerge(DEFAULT_SETTINGS, {
-      pstPath: path.join(docs, 'OpenMail', 'OpenMail.pst'),
+      pstPath: path.join(docs, 'OpenMail', 'Mailbox.pst'),
       sync: { emlBackupDir: path.join(docs, 'OpenMail', 'eml-backup') },
     });
     this.settings = deepMerge(defaults, readJson(this.files.settings, {}));

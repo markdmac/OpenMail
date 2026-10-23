@@ -1,23 +1,27 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const { Store } = require('./store');
 const { GoogleAuth } = require('./gmail/google-auth');
 const { GmailClient } = require('./gmail/gmail-client');
-const { OutlookBridge } = require('./outlook/outlook-bridge');
+const { StoreClient } = require('./store/store-client');
 const { SyncEngine } = require('./sync-engine');
 const rules = require('./rules');
 const { buildMime } = require('./compose');
+
+// Developer/testing aid: run with a separate settings folder (OPENMAIL_PROFILE=C:\path\to\profile).
+if (process.env.OPENMAIL_PROFILE) app.setPath('userData', process.env.OPENMAIL_PROFILE);
 
 let win;
 let store;
 let auth;
 let gmail;
-let outlook;
+let mailbox;
 let sync;
 let profile = null;
-let pstReady = null;
 const logBuffer = [];
 
 function send(channel, payload) {
@@ -30,14 +34,8 @@ function log(line) {
   send('log', line);
 }
 
-function ensurePst() {
-  if (!pstReady) {
-    pstReady = outlook.init(store.settings.pstPath, store.settings.pstDisplayName).catch((e) => {
-      pstReady = null;
-      throw e;
-    });
-  }
-  return pstReady;
+function openMailbox() {
+  return mailbox.open(store.settings.pstPath, store.settings.pstDisplayName);
 }
 
 async function loadProfile() {
@@ -57,6 +55,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: 'OpenMail',
+    icon: path.join(__dirname, '..', '..', 'icon.png'),
     backgroundColor: '#f3f2f1',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -90,22 +89,41 @@ function handle(channel, fn) {
   });
 }
 
+/** Mailbox calls: make sure the PST is open first. */
+function mb(cmd, mapArgs = (a) => a) {
+  return async (...args) => {
+    await openMailbox();
+    return mailbox.call(cmd, mapArgs(...args));
+  };
+}
+
 function registerIpc() {
-  handle('app:info', async () => ({
-    settings: store.settings,
-    state: store.state,
-    signedIn: auth.isSignedIn(),
-    email: profile?.emailAddress || null,
-    status: sync.status,
-    log: logBuffer.slice(-300),
-    meta: { fields: rules.FIELDS, operators: rules.OPERATORS, actions: rules.ACTIONS },
-    version: app.getVersion(),
-  }));
+  handle('app:info', async () => {
+    let mailboxInfo = null;
+    let mailboxError = null;
+    try {
+      mailboxInfo = await openMailbox();
+    } catch (e) {
+      mailboxError = e.message;
+    }
+    return {
+      settings: store.settings,
+      state: store.state,
+      signedIn: auth.isSignedIn(),
+      email: profile?.emailAddress || null,
+      status: sync.status,
+      log: logBuffer.slice(-300),
+      meta: { fields: rules.FIELDS, operators: rules.OPERATORS, actions: rules.ACTIONS },
+      version: app.getVersion(),
+      mailbox: mailboxInfo,
+      mailboxError,
+    };
+  });
 
   handle('settings:save', async (patch) => {
     const before = store.settings.pstPath;
     const s = store.saveSettings(patch);
-    if (s.pstPath !== before) pstReady = null;
+    if (s.pstPath !== before) mailbox.opened = null;
     sync.startPolling();
     return s;
   });
@@ -125,47 +143,76 @@ function registerIpc() {
     return true;
   });
 
-  // ---- PST / folders / items (all via Outlook) ----
-  handle('pst:open', async () => ensurePst());
-  handle('folders:list', async () => {
-    await ensurePst();
-    return outlook.call('listFolders');
+  // ---- Mailbox (PST)
+  handle('mailbox:open', async () => openMailbox());
+  handle('mailbox:check', mb('check'));
+  handle('mailbox:emptyDeleted', mb('emptyDeletedItems'));
+  handle('mailbox:import', async (filePath, prefix) => {
+    await openMailbox();
+    let src = filePath;
+    if (!src) {
+      const r = await dialog.showOpenDialog(win, { title: 'Import Outlook data file', filters: [{ name: 'Outlook Data File', extensions: ['pst'] }], properties: ['openFile'] });
+      if (r.canceled) return null;
+      src = r.filePaths[0];
+    }
+    if (path.resolve(src).toLowerCase() === path.resolve(store.settings.pstPath).toLowerCase()) throw new Error('That is the mailbox file itself.');
+    log(`Importing ${src}${prefix ? ` into "${prefix}"` : ''}…`);
+    const result = await mailbox.call('importPst', { path: src, targetPrefix: prefix || '', skipDuplicates: true });
+    log(`Import finished: ${result.messages} messages in ${result.folders} new folders, ${result.duplicates} duplicates skipped, ${result.errors} errors.`);
+    return result;
   });
-  handle('folders:create', async (p) => {
-    await ensurePst();
-    return outlook.call('ensureFolder', { path: p });
-  });
-  handle('folders:rename', async (p, newName) => {
-    await ensurePst();
-    return outlook.call('renameFolder', { path: p, newName });
-  });
-  handle('folders:delete', async (p) => {
-    await ensurePst();
-    return outlook.call('deleteFolder', { path: p });
-  });
-  handle('items:list', async (args) => {
-    await ensurePst();
-    return outlook.call('listItems', args);
-  });
-  handle('items:get', async (entryId) => {
-    await ensurePst();
-    return outlook.call('getItem', { entryId });
-  });
-  handle('items:setRead', async (entryIds, unread) => outlook.call('setRead', { entryIds, unread }));
-  handle('items:flag', async (entryIds, flagged) => outlook.call('setFlag', { entryIds, flagged }));
-  handle('items:categories', async (entryIds, categories) => outlook.call('setCategories', { entryIds, categories }));
-  handle('items:move', async (entryIds, folderPath) => outlook.call('moveItems', { entryIds, folderPath }));
-  handle('items:delete', async (entryIds) => outlook.call('deleteItems', { entryIds }));
-  handle('items:openInOutlook', async (entryId) => outlook.call('openInOutlook', { entryId }));
-  handle('items:saveAttachment', async (entryId, index, name) => {
-    const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), name) });
-    if (canceled) return null;
-    return outlook.call('saveAttachment', { entryId, index, path: filePath });
+  /** Converts an old ANSI mailbox to a new Unicode PST next to it and switches to it. */
+  handle('mailbox:convert', async () => {
+    const info = await openMailbox();
+    if (info.unicode) return info;
+    const oldPath = info.path;
+    const dir = path.dirname(oldPath);
+    let newPath = path.join(dir, `${path.basename(oldPath, '.pst')} (Unicode).pst`);
+    for (let i = 2; fs.existsSync(newPath); i++) newPath = path.join(dir, `${path.basename(oldPath, '.pst')} (Unicode ${i}).pst`);
+    await mailbox.call('close');
+    mailbox.opened = null;
+    await mailbox.open(newPath, store.settings.pstDisplayName);
+    log(`Converting ${oldPath} → ${newPath}…`);
+    const result = await mailbox.call('importPst', { path: oldPath, targetPrefix: '', skipDuplicates: true });
+    store.saveSettings({ pstPath: newPath });
+    log(`Converted: ${result.messages} messages copied. The old file was left unchanged at ${oldPath}.`);
+    return { ...(await mailbox.call('info')), converted: result };
   });
 
-  // ---- Sync ----
+  handle('folders:list', mb('folders'));
+  handle('folders:create', mb('ensureFolder', (p) => ({ path: p })));
+  handle('folders:rename', mb('renameFolder', (p, newName) => ({ path: p, newName })));
+  handle('folders:delete', mb('deleteFolder', (p) => ({ path: p })));
+  handle('folders:move', mb('moveFolder', (p, newParentPath) => ({ path: p, newParentPath })));
+
+  handle('items:list', mb('listItems'));
+  handle('items:get', mb('getItem', (id) => ({ id })));
+  handle('items:idsFromSender', mb('idsFromSender', (folderPath, from) => ({ folderPath, from })));
+  handle('items:setRead', mb('setRead', (ids, read) => ({ ids, read })));
+  handle('items:flag', mb('setFlag', (ids, flagged) => ({ ids, flagged })));
+  handle('items:categories', mb('setCategories', (ids, categories) => ({ ids, categories })));
+  handle('items:move', mb('moveItems', (ids, folderPath) => ({ ids, folderPath })));
+  handle('items:delete', mb('deleteItems', (ids) => ({ ids })));
+  handle('items:saveAttachment', async (id, attachmentId, name) => {
+    const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), name) });
+    if (canceled) return null;
+    await openMailbox();
+    return mailbox.call('saveAttachment', { id, attachmentId, path: filePath });
+  });
+  handle('items:openAttachment', async (id, attachmentId, name) => {
+    await openMailbox();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openmail-att-'));
+    const file = path.join(dir, name.replace(/[\\/:*?"<>|]/g, '_'));
+    await mailbox.call('saveAttachment', { id, attachmentId, path: file });
+    const err = await shell.openPath(file);
+    if (err) throw new Error(err);
+    return file;
+  });
+
+  // ---- Sync
   handle('sync:now', async () => {
-    await ensurePst();
+    const info = await openMailbox();
+    if (!info.unicode) throw new Error('Your mailbox is in the old ANSI format. Convert it first (Settings → Mailbox).');
     sync.syncNow().catch((e) => log(`Sync failed: ${e.message}`));
     return true;
   });
@@ -179,18 +226,18 @@ function registerIpc() {
     return store.state;
   });
 
-  // ---- Rules ----
+  // ---- Rules
   handle('rules:list', async () => store.rules);
   handle('rules:new', async () => rules.newRule());
   handle('rules:save', async (list) => store.saveRules(list));
   handle('rules:preview', async (rule) => sync.previewRule(rule));
   handle('rules:run', async (rule) => {
-    await ensurePst();
+    await openMailbox();
     sync.runRuleNow(rule).catch((e) => log(`Rule run failed: ${e.message}`));
     return true;
   });
 
-  // ---- Compose ----
+  // ---- Compose
   handle('mail:send', async (draft) => {
     if (!profile) await loadProfile();
     const raw = await buildMime({ ...draft, from: profile.emailAddress });
@@ -204,7 +251,7 @@ function registerIpc() {
   });
   handle('dialog:pickPst', async () => {
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: 'Choose or create a PST file',
+      title: 'Choose or create the mailbox PST file',
       defaultPath: store.settings.pstPath,
       filters: [{ name: 'Outlook Data File', extensions: ['pst'] }],
     });
@@ -222,9 +269,11 @@ app.whenReady().then(async () => {
   store = new Store();
   auth = new GoogleAuth(store);
   gmail = new GmailClient(auth);
-  outlook = new OutlookBridge();
-  outlook.on('log', log);
-  sync = new SyncEngine({ store, gmail, outlook });
+  mailbox = new StoreClient();
+  mailbox.on('log', log);
+  mailbox.on('error', log);
+  mailbox.on('import-progress', (p) => send('import:progress', p));
+  sync = new SyncEngine({ store, gmail, mailbox });
   sync.on('log', log);
   sync.on('status', (s) => send('sync:status', s));
 
@@ -236,15 +285,26 @@ app.whenReady().then(async () => {
     sync.startPolling();
     // Resume automatically only if the user has already started syncing once.
     if (store.state.initialStartedAt) {
-      ensurePst()
-        .then(() => sync.syncNow())
+      openMailbox()
+        .then((info) => (info.unicode ? sync.syncNow() : log('Sync paused until the mailbox is converted to Unicode.')))
         .catch((e) => log(`Startup sync failed: ${e.message}`));
     }
   }
 });
 
-app.on('window-all-closed', () => {
+let quitting = false;
+app.on('before-quit', async (e) => {
+  if (quitting) return;
+  e.preventDefault();
+  quitting = true;
   sync?.stop();
-  outlook?.stop();
+  try {
+    await sync?.flushTrash();
+  } catch {
+    /* ignore */
+  }
+  await mailbox?.stop();
   app.quit();
 });
+
+app.on('window-all-closed', () => app.quit());

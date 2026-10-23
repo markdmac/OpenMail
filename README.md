@@ -1,8 +1,10 @@
 # OpenMail
 
-OpenMail is an open-source, Outlook-style desktop mail client for Windows. It downloads your Gmail into an **Outlook PST file**, files messages into folders, and keeps your inbox tidy with **Outlook-style rules**. Gmail becomes the delivery pipe; the PST becomes where your mailbox lives.
+OpenMail is an open-source, Outlook-style desktop mail client for Windows. It downloads your Gmail into a **standard Outlook PST file**, files messages into folders, and keeps your inbox tidy with **Outlook-style rules**. Gmail becomes the delivery pipe; the PST becomes where your mailbox lives.
 
-> Status: early (0.1). The core pipeline (Gmail → PST, rules, three-pane reader, compose) works. Calendar, contacts and tasks are on the roadmap.
+**Outlook is not required.** OpenMail has its own PST engine that reads and writes PST files directly. The files are fully compatible with Outlook, so you can open them in Outlook, and you can import any existing PST (including old Outlook 97–2002 ANSI files) into OpenMail.
+
+> Status: early (0.2). Gmail → PST sync, rules, the three-pane reader, compose, PST import and the native PST engine all work. Calendar, contacts and tasks are on the roadmap.
 
 ## How it works
 
@@ -30,19 +32,20 @@ OpenMail is an open-source, Outlook-style desktop mail client for Windows. It do
 | Area | What's there |
 |---|---|
 | Mailbox | Three-pane Outlook-style UI, folder tree with unread counts, search, unread filter, drag-and-drop to folders |
-| Reading | HTML mail in a locked-down sandbox; remote images blocked until you allow them; inline images; save attachments |
-| Actions | Reply, Reply All, Forward, Delete (PST Deleted Items), Move, Mark read/unread, Flag, Open in Outlook |
+| Reading | HTML mail in a locked-down sandbox; remote images blocked until you allow them; inline images; open or save attachments |
+| Actions | Reply, Reply All, Forward, Delete (to Deleted Items; permanent from there), Move, Mark read/unread, Flag |
 | Compose | Rich-text editor, Cc/Bcc, attachments; sends through Gmail so replies thread correctly |
 | Folders | Create, rename, delete, nest |
 | Rules | Conditions: from, to, cc, subject, body, sender domain, Gmail label, attachment, newsletter, unread, age, size. Actions: move to folder, categorise, mark read, flag, keep in Gmail, trash in Gmail, don't archive, trash without archiving. All/any matching, stop processing, ordering |
 | Clean-up | Preview any rule against mail already in Gmail, then run it ("Run on Gmail now") |
-| PST | Unicode PST written through your installed Outlook; also browsable in Outlook itself |
+| PST | Native read/write PST engine (no Outlook needed); Outlook-compatible Unicode files; reads old ANSI PSTs; import any PST with folders, attachments and categories; built-in file integrity check |
+| Bulk clean-up | Sort by sender, subject, date or size; group by sender with "select all / move all / delete all"; Ctrl/Shift multi-select; drag many messages onto a folder |
 
 ## Requirements
 
-- Windows 10 or 11
-- **Microsoft Outlook (desktop, 2013 or later)** installed. OpenMail drives it through COM to write the PST.
+- Windows 10 or 11 (the PST engine itself is plain JavaScript and also runs on macOS/Linux)
 - Node.js 20+ (only for development and building)
+- Microsoft Outlook is **not** required
 - A Google account, plus a free Google Cloud OAuth client (below)
 
 ## 1. Create your Google OAuth client (one time, about 5 minutes)
@@ -70,7 +73,7 @@ npm start
 In the app, open **Settings**:
 
 1. Paste the client ID and secret, then click **Sign in with Google**. Your browser opens; approve access.
-2. Choose where the PST should live. The default is `Documents\OpenMail\OpenMail.pst`.
+2. Choose where the PST should live. The default is `Documents\OpenMail\Mailbox.pst` (created automatically).
 3. Review the sync options and click **Save**.
 4. Click **Sync Now** (F9). The initial sync is resumable: you can close the app and it will continue next time.
 5. Once you're happy with what's in the PST, go back to Settings and turn on **Enable trashing**.
@@ -86,9 +89,18 @@ This produces an NSIS installer and a portable `.exe` in `dist/`.
 ## Tests
 
 ```bash
-npm test               # unit tests: CFB/MSG writer, rules engine
-npm run test:outlook   # end-to-end: builds a message, imports it into a throwaway PST via Outlook, reads it back
+npm test    # PST engine (create/read/write/stress, checked by an integrity checker and by pst-extractor), rules engine
 ```
+
+Developer tools (optional; the Outlook-based ones are only for cross-checking compatibility):
+
+| Command | Purpose |
+|---|---|
+| `node src/main/pst/pst-check.js file.pst` | Integrity check (B-trees, checksums, reference counts, allocation maps) |
+| `node scripts/pst-dump.js file.pst [--ltp] [--blocks]` | Dump a PST's internal structure |
+| `powershell -File scripts/outlook-verify.ps1 -Pst copy.pst` | Open a PST in Outlook and list what Outlook sees (needs Outlook) |
+| `node scripts/make-reference-psts.js` | Have Outlook generate reference PSTs (needs Outlook) |
+| `node scripts/gen-pst-template.js empty.pst` | Regenerate the new-PST template from an empty Outlook PST |
 
 ## Architecture
 
@@ -107,20 +119,32 @@ src/
       from-mime.js          RFC 822 → normalized message (mailparser)
       msg-writer.js         normalized message → Outlook .msg (MS-OXMSG)
       cfb-writer.js         Compound File Binary writer (MS-CFB)
-    outlook/
-      outlook-bridge.js     JSON-lines RPC to a long-lived PowerShell worker
-      outlook-worker.ps1    Outlook COM: PST store, folders, import, listing, item ops
+    store/
+      store-worker.js       worker thread that owns the open PST (the UI never blocks)
+      store-client.js       promise API used by the main process
+      pst-import.js         copies another PST into the mailbox, property for property
+    pst/                    native PST engine ([MS-PST])
+      ndb.js, ndb-writer.js node database: header, B-trees, blocks, allocation maps, copy-on-write commits
+      ltp.js                heap-on-node, BTH, property and table contexts
+      pst-store.js          messaging layer: folders, messages, recipients, attachments
+      named-props.js        named property map (categories etc.)
+      pst-create.js         new empty PSTs (from pst-template.json)
+      pst-check.js          integrity checker
   renderer/                 UI (plain HTML/CSS/JS, no framework)
 ```
 
-**Getting mail into the PST:** each Gmail message is downloaded as raw MIME, converted to an Outlook `.msg` file in-process (headers, HTML and plain-text bodies, recipients, attachments, inline images, sent and received times, read state), opened by Outlook with `Namespace.OpenSharedItem`, and moved into the target PST folder. This keeps the original dates and sender intact, which composing items through the Outlook object model can't do.
+**Getting mail into the PST:** each Gmail message is downloaded as raw MIME, parsed, and written straight into the PST by OpenMail's engine: headers, HTML and plain-text bodies, recipients, attachments, inline images, sent and received times, read state, categories and flags.
+
+**The PST engine** implements Microsoft's published [MS-PST] format. Its output was verified against files Outlook itself creates, by having Outlook open OpenMail-written files, and with an independent reader ([pst-extractor](https://github.com/epfromer/pst-extractor)). Commits are copy-on-write and crash-safe: the header is switched to the new trees first and the allocation maps are flagged as "being updated", so an interrupted write is detected and repaired on the next open, the same way Outlook does it. Messages are moved to Gmail Trash only after the PST holding them has been committed to disk.
+
+**One program at a time:** don't open the same PST in Outlook while OpenMail has it open. OpenMail detects Outlook's file lock and asks you to close the file there.
 
 **Where state lives** (`%APPDATA%\OpenMail`): `settings.json`, `rules.json`, `sync-state.json`, `tokens.bin` (encrypted with Windows DPAPI), and `processed.log`, an append-only ledger of every Gmail message ID handled.
 
 ## Roadmap
 
 - Calendar and contacts (Google Calendar / People API ↔ PST)
-- A native PST writer (MS-PST), so Outlook is no longer required
+- Open additional PSTs side by side (read-only browsing without importing)
 - IMAP accounts besides Gmail
 - Multi-select actions, conversation view, signatures, drafts
 - Scheduled rule runs, rule import/export

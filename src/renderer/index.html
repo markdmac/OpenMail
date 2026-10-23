@@ -17,21 +17,23 @@
   <nav class="ribbon">
     <button id="btn-new" class="primary" title="New email (Ctrl+N)">✉ New Email</button>
     <span class="sep"></span>
-    <button id="btn-reply" data-needs-item title="Reply (Ctrl+R)">↩ Reply</button>
-    <button id="btn-replyall" data-needs-item title="Reply all (Ctrl+Shift+R)">↩↩ Reply All</button>
-    <button id="btn-forward" data-needs-item title="Forward (Ctrl+F)">↪ Forward</button>
+    <button id="btn-reply" data-needs-one title="Reply (Ctrl+R)">↩ Reply</button>
+    <button id="btn-replyall" data-needs-one title="Reply all (Ctrl+Shift+R)">↩↩ Reply All</button>
+    <button id="btn-forward" data-needs-one title="Forward (Ctrl+F)">↪ Forward</button>
     <span class="sep"></span>
-    <button id="btn-delete" data-needs-item title="Delete (Del)">🗑 Delete</button>
-    <button id="btn-move" data-needs-item title="Move to folder">📁 Move</button>
-    <button id="btn-unread" data-needs-item title="Mark read / unread (Ctrl+Q / Ctrl+U)">● Unread/Read</button>
+    <button id="btn-delete" data-needs-item title="Delete selected (Del)">🗑 Delete</button>
+    <button id="btn-move" data-needs-item title="Move selected to a folder (Ctrl+Shift+V)">📁 Move</button>
+    <button id="btn-unread" data-needs-item title="Mark read / unread (Ctrl+Q / Ctrl+U)">● Read/Unread</button>
     <button id="btn-flag" data-needs-item title="Flag for follow-up">⚑ Flag</button>
-    <button id="btn-outlook" data-needs-item title="Open this message in Outlook">⧉ Open in Outlook</button>
     <span class="sep"></span>
     <button id="btn-sync" title="Sync with Gmail now (F9)">⟳ Sync Now</button>
     <button id="btn-rules">⚙ Rules</button>
+    <button id="btn-import" title="Import messages from another PST file">📥 Import PST</button>
     <button id="btn-settings">☰ Settings</button>
     <button id="btn-log">📝 Activity</button>
   </nav>
+
+  <div id="banner" class="banner" hidden></div>
 
   <main class="panes">
     <aside class="folders">
@@ -44,9 +46,10 @@
 
     <section class="list">
       <div class="pane-head">
-        <span id="folder-title">Inbox</span>
-        <label class="filter"><input type="checkbox" id="unread-only"> Unread</label>
+        <span><span id="folder-title">Inbox</span> <span id="list-count" class="hint"></span></span>
+        <label class="filter"><input type="checkbox" id="unread-only"> Unread only</label>
       </div>
+      <div id="list-columns" class="list-columns"></div>
       <ul id="message-list" class="messages" tabindex="0"></ul>
       <button id="load-more" class="load-more" hidden>Load more</button>
     </section>
@@ -68,10 +71,10 @@
   <template id="tpl-setup">
     <div class="setup">
       <h2>Welcome to OpenMail</h2>
-      <p>OpenMail downloads your Gmail into an Outlook PST file, files it into folders, and keeps it organised with rules.</p>
+      <p>OpenMail downloads your Gmail into a PST mailbox, files it into folders, and keeps it organised with rules.</p>
       <ol>
         <li><strong>Gmail account</strong>: add your Google OAuth client ID in Settings (see README), then sign in.</li>
-        <li><strong>PST file</strong>: choose where your mailbox will live. Outlook must be installed.</li>
+        <li><strong>Mailbox</strong>: your mail is stored in a standard Outlook PST file that OpenMail reads and writes itself (Outlook is not needed). You can import old PST files too.</li>
         <li><strong>Sync</strong>: run the initial sync. Nothing is removed from Gmail until you turn on trashing in Settings.</li>
       </ol>
     </div>

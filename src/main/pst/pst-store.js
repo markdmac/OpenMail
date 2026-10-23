@@ -564,12 +564,18 @@ class PstStore {
    */
   addMessage(folderNid, m) {
     this.ndb.begin();
-    const nid = this.allocNid(NID_TYPE.NORMAL_MESSAGE);
     const { props, subnodes } = this.buildMessage(m);
+    return this.addRawMessage(folderNid, props, subnodes, !!m.unread);
+  }
+
+  /** Adds a message from ready-made properties and subnodes (used by import and addMessage). */
+  addRawMessage(folderNid, props, subnodes, unread) {
+    this.ndb.begin();
+    const nid = this.allocNid(NID_TYPE.NORMAL_MESSAGE);
     this.writePCNode(nid, folderNid, props, null, subnodes);
     const pmap = new Map(props.map((p) => [p.id, p]));
     this.addTableRow(tableNid(folderNid, NID_TYPE.CONTENTS_TABLE), nid, pmap);
-    this.adjustCounts(folderNid, 1, m.unread ? 1 : 0);
+    this.adjustCounts(folderNid, 1, unread ? 1 : 0);
     return nid;
   }
 

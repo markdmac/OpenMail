@@ -1,8 +1,8 @@
 {
   "name": "openmail",
   "productName": "OpenMail",
-  "version": "0.1.0",
-  "description": "Open-source Outlook-style desktop mail client that archives Gmail into Outlook PST files with rules.",
+  "version": "0.2.0",
+  "description": "Open-source Outlook-style mail client that keeps your Gmail in standard PST files, with a native PST engine (no Outlook needed) and rules.",
   "main": "src/main/main.js",
   "license": "MIT",
   "author": "OpenMail contributors",
@@ -26,16 +26,15 @@
     "productName": "OpenMail",
     "files": [
       "src/**/*",
+      "icon.png",
       "package.json"
-    ],
-    "asarUnpack": [
-      "src/main/outlook/outlook-worker.ps1"
     ],
     "win": {
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "icon.png"
     }
   }
 }

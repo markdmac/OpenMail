@@ -8,11 +8,9 @@
 // rescue from Gmail Trash is never processed again.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { parseRaw } = require('./msg/from-mime');
-const { buildMsg } = require('./msg/msg-writer');
+const { parseRaw } = require('./from-mime');
 const rulesEngine = require('./rules');
 
 const SYSTEM_FOLDERS = { INBOX: 'Inbox', SENT: 'Sent Items' };
@@ -23,19 +21,20 @@ const CATEGORY_LABELS = {
   CATEGORY_FORUMS: 'Forums',
 };
 const DOWNLOAD_CONCURRENCY = 4;
+const TRASH_BATCH = 25;
 
 class SyncEngine extends EventEmitter {
-  constructor({ store, gmail, outlook }) {
+  constructor({ store, gmail, mailbox }) {
     super();
     this.store = store;
     this.gmail = gmail;
-    this.outlook = outlook;
+    this.mailbox = mailbox;
+    this.trashQueue = [];
+    this.flushing = null;
     this.running = null;
     this.stopRequested = false;
     this.labelMap = new Map();
     this.timer = null;
-    this.tmpDir = path.join(os.tmpdir(), 'openmail');
-    fs.mkdirSync(this.tmpDir, { recursive: true });
     this.status = { phase: 'idle', done: 0, total: 0, message: '' };
   }
 
@@ -73,9 +72,11 @@ class SyncEngine extends EventEmitter {
         await this.refreshLabels();
         if (!this.store.state.initialSyncComplete) await this.initialSync();
         if (this.store.state.initialSyncComplete && !this.stopRequested) await this.incrementalSync();
+        await this.flushTrash();
         this.store.saveState({ lastSyncAt: new Date().toISOString() });
         this.setStatus({ phase: 'idle', message: this.stopRequested ? 'Sync paused' : 'Up to date' });
       } catch (e) {
+        await this.flushTrash().catch(() => {});
         this.setStatus({ phase: 'error', message: e.message });
         throw e;
       } finally {
@@ -83,6 +84,33 @@ class SyncEngine extends EventEmitter {
       }
     })();
     return this.running;
+  }
+
+  /**
+   * Messages are moved to Gmail Trash only after the PST holding them has been committed to disk,
+   * so a crash can never lose mail: at worst a message stays in Gmail.
+   */
+  async flushTrash() {
+    while (this.flushing) await this.flushing;
+    if (!this.trashQueue.length) return;
+    const batch = this.trashQueue.splice(0);
+    this.flushing = (async () => {
+      await this.mailbox.call('commit');
+      for (const t of batch) {
+        try {
+          await this.gmail.trash(t.id);
+          this.store.record(t.id, 'archived+trashed', t.entryId, t.folder);
+          this.bumpTotal('trashed');
+        } catch (e) {
+          this.log(`Could not move ${t.id} to Gmail Trash: ${e.message}`);
+        }
+      }
+    })();
+    try {
+      await this.flushing;
+    } finally {
+      this.flushing = null;
+    }
   }
 
   async refreshLabels() {
@@ -173,6 +201,7 @@ class SyncEngine extends EventEmitter {
         const item = items[i++];
         try {
           await worker(item);
+          if (this.trashQueue.length >= TRASH_BATCH) await this.flushTrash();
         } catch (e) {
           this.bumpTotal('errors');
           this.log(`Error on message ${item}: ${e.message}`);
@@ -184,6 +213,7 @@ class SyncEngine extends EventEmitter {
       }
     };
     await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, items.length) }, next));
+    await this.flushTrash();
   }
 
   bumpTotal(key, n = 1) {
@@ -265,27 +295,25 @@ class SyncEngine extends EventEmitter {
     // File into the PST (or, for an already-archived message, move it to the rule's folder).
     const { folder, categories } = this.folderFor(msg.labelIds, plan);
     let entryId = existing?.entryId;
-    if (entryId && mode === 'rule') {
-      if (plan.folder && plan.folder !== existing.folder) {
-        const res = await this.outlook.call('moveItems', { entryIds: [entryId], folderPath: folder });
-        entryId = res.entryIds[0];
+    if (existing && mode === 'rule') {
+      // Already in the PST: move it if the rule says so (entries from the old Outlook-based version
+      // have no PST id and are left where they are).
+      if (/^d+$/.test(entryId || '') && plan.folder && plan.folder !== existing.folder) {
+        await this.mailbox.call('moveItems', { ids: [Number(entryId)], folderPath: folder });
       }
     } else {
       if (cfg.keepEmlBackup) this.writeBackup(id, parsed.receivedDate, msg.raw);
-      const msgBuf = buildMsg({ ...parsed, unread: unread && !plan.markRead, flagged: plan.flag || msg.labelIds.includes('STARRED') });
-      const tmp = path.join(this.tmpDir, `${id}.msg`);
-      fs.writeFileSync(tmp, msgBuf);
-      try {
-        const res = await this.outlook.call('importMsg', {
-          msgPath: tmp,
-          folderPath: folder,
+      const res = await this.mailbox.call('addMessage', {
+        folderPath: folder,
+        message: {
+          ...parsed,
           unread: unread && !plan.markRead,
+          flagged: plan.flag || msg.labelIds.includes('STARRED'),
           categories,
-        });
-        entryId = res.entryId;
-      } finally {
-        fs.rm(tmp, { force: true }, () => {});
-      }
+          rawSize: msg.raw.length,
+        },
+      });
+      entryId = String(res.id);
       this.bumpTotal('downloaded');
     }
     // Record before trashing: if we crash in between, the message simply stays in Gmail.
@@ -298,11 +326,7 @@ class SyncEngine extends EventEmitter {
     else if (mode === 'new') trash = isSent ? cfg.trashSent : cfg.trashNewMail;
     else trash = false;
 
-    if (trash && cfg.trashingEnabled) {
-      await this.gmail.trash(id);
-      this.store.record(id, 'archived+trashed', entryId, folder);
-      this.bumpTotal('trashed');
-    }
+    if (trash && cfg.trashingEnabled) this.trashQueue.push({ id, entryId, folder });
     this.log(`${trash && cfg.trashingEnabled ? 'Archived + trashed' : 'Archived'} → ${folder}: ${parsed.subject}${tag}`);
     return { status: 'archived', folder, trashed: !!(trash && cfg.trashingEnabled), plan };
   }
@@ -389,6 +413,7 @@ class SyncEngine extends EventEmitter {
           counts[r.status] = (counts[r.status] || 0) + 1;
           this.setStatus({ done: ++done });
         });
+        await this.flushTrash();
         this.log(`Rule "${rule.name}" finished: ${JSON.stringify(counts)}`);
         this.setStatus({ phase: 'idle', message: `Rule finished (${done} messages)` });
         return counts;
